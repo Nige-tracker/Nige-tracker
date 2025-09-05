@@ -11,14 +11,24 @@ export const el = (html) => {
 export const escapeHtml = (s="") =>
   s.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 
-// --- money + text helpers ---
-export function parseGBPFromText(text = "") {
-  // Finds the first currency amount like £1,234.56 or 1,234
-  const m = text.replace(/[, ]+/g, ",").match(/£?\s*([0-9]{1,3}(?:,[0-9]{3})+|[0-9]+)(?:\.(\d{2}))?/);
-  if (!m) return null;
-  const whole = m[1].replace(/,/g, "");
-  const decimals = m[2] ? parseInt(m[2], 10) : 0;
-  return parseInt(whole, 10) + (decimals / 100);
+// --- money + date helpers (replace old versions) ---
+export function parseAllGBP(text = "") {
+  // Finds ALL £ amounts like £26,817.60 or £500 or 1,200 (with or without £).
+  // We prefer tokens that start with £, but will also accept plain numbers with thousands.
+  const out = [];
+  const rx = /£\s*([0-9][0-9,]*)(?:\.(\d{2}))?/g;
+  let m;
+  while ((m = rx.exec(text)) !== null) {
+    const whole = m[1].replace(/,/g, "");
+    const dec = m[2] ? parseInt(m[2], 10) : 0;
+    out.push(parseInt(whole, 10) + dec / 100);
+  }
+  return out;
+}
+
+export function parseLargestGBP(text = "") {
+  const all = parseAllGBP(text);
+  return all.length ? Math.max(...all) : null;
 }
 
 export function inLastDays(dateStr, days = 365) {
@@ -33,5 +43,7 @@ export function inLastDays(dateStr, days = 365) {
 export function monthKey(dateStr) {
   const d = new Date(dateStr);
   if (isNaN(d)) return "";
-  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2, "0")}`; // YYYY-MM
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`; // YYYY-MM
+}
+
 }
