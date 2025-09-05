@@ -2,128 +2,85 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>Hansard Activity Viewer</title>
+  <title>Hansard – Sanity Check</title>
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <style>
-    :root { --b:#111; --muted:#666; --line:#e5e5e5; }
     body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
-           max-width: 760px; margin: 2rem auto; padding: 0 1rem; line-height: 1.5; color: var(--b); }
-    h1 { margin: 0 0 .25rem; font-size: 1.75rem; }
-    p.small { color: var(--muted); margin: 0 0 1rem; }
-    .row { display:flex; gap:.5rem; align-items:center; margin:.5rem 0 1rem; }
-    input, button { padding:.6rem .8rem; border:1px solid var(--line); border-radius:10px; font-size:1rem; }
-    input { flex:1; }
-    button { cursor:pointer; }
-    #results { display:grid; gap:.6rem; margin-top: .5rem; }
-    .card { border:1px solid var(--line); border-radius:12px; padding:.75rem 1rem; }
-    .meta { color: var(--muted); font-size:.9rem; }
-    .title { margin:.25rem 0; font-size:1.05rem; font-weight:600; }
-    .empty, .error { padding:1rem; border-radius:10px; }
-    .empty { background:#fafafa; color:#555; border:1px dashed var(--line); text-align:center; }
-    .error { background:#fff3f3; color:#b00020; border:1px solid #ffc9c9; }
+           max-width: 720px; margin: 2rem auto; padding: 0 1rem; line-height: 1.5; }
+    .ok { background:#ecfdf5; color:#065f46; border:1px solid #a7f3d0; padding:.75rem 1rem; border-radius:10px; }
+    .warn { background:#fff7ed; color:#9a3412; border:1px solid #fed7aa; padding:.75rem 1rem; border-radius:10px; }
+    .err { background:#fef2f2; color:#991b1b; border:1px solid #fecaca; padding:.75rem 1rem; border-radius:10px; }
+    code { background:#f6f6f6; padding:.1rem .25rem; border-radius:6px; }
+    #results { margin-top: 1rem; }
   </style>
 </head>
 <body>
-  <h1>Hansard Activity Viewer</h1>
-  <p class="small">Live from the UK Parliament Linked Data API. Search happens in your browser.</p>
-
-  <div class="row">
-    <input id="searchBox" placeholder="Search (e.g. Ukraine, budget, fisheries)" />
-    <button id="searchBtn" type="button">Search</button>
-  </div>
-
-  <div id="results" aria-live="polite"></div>
+  <h1>Hansard – Sanity Check</h1>
+  <div id="status" class="warn">⏳ Checking…</div>
+  <div id="results"></div>
 
   <script>
-    // === Utilities ===
-    const $results = document.getElementById("results");
-    const $search  = document.getElementById("searchBox");
-    const $btn     = document.getElementById("searchBtn");
+    const $status = document.getElementById('status');
+    const $results = document.getElementById('results');
 
-    function fmtDate(d) { try { return new Date(d).toLocaleString(); } catch { return d || ""; } }
+    // Step 1: confirm JS runs
+    $status.className = 'ok';
+    $status.textContent = '✅ JavaScript loaded and running';
 
-    // Build a non-404 link: prefer externalLocation (official page).
-    // Else send to Hansard Search with title+date so it reliably resolves.
-    function safeLink(item) {
-      const ext = item?.externalLocation;
-      if (ext && /^https?:\/\//i.test(ext)) return ext;
+    // Step 2: try to fetch a reliable public feed
+    (async () => {
+      const url = new URL('https://lda.data.parliament.uk/proceedings.json');
+      url.searchParams.set('_pageSize', '10');
+      url.searchParams.set('_sort', '-date'); // newest first
 
-      const title = item?.title || item?.label || "Hansard";
-      const p = new URLSearchParams({ searchTerm: title });
-
-      const date = item?.date ? new Date(item.date) : null;
-      if (date && !isNaN(date)) {
-        const y = date.getFullYear(), m = String(date.getMonth()+1).padStart(2,"0"), d = String(date.getDate()).padStart(2,"0");
-        p.set("startDate", `${y}-${m}-${d}`);
-        p.set("endDate",   `${y}-${m}-${d}`);
-      }
-      return "https://hansard.parliament.uk/search?" + p.toString();
-    }
-
-    // === Data load ===
-    // Fetch a broad, reliable feed once. We use "proceedings.json" (newest first).
-    async function loadFeed() {
-      $results.innerHTML = '<div class="empty">Loading…</div>';
-      const url = new URL("https://lda.data.parliament.uk/proceedings.json");
-      url.searchParams.set("_pageSize", "60"); // up to 60 recent items
-      url.searchParams.set("_sort", "-date");
       try {
         const res = await fetch(url.toString());
-        if (!res.ok) throw new Error("HTTP " + res.status);
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+
         const data = await res.json();
         const items = Array.isArray(data?.result?.items) ? data.result.items : [];
-        window.__HANSARD_ITEMS__ = items;
-        render(items);
+        if (items.length === 0) {
+          $results.innerHTML = '<div class="warn">⚠️ Feed loaded but returned 0 items.</div>';
+          return;
+        }
+
+        $results.innerHTML = '<div class="ok">✅ Fetched ' + items.length + ' recent proceedings.</div>';
+
+        // show the first 3 items with safe links
+        const list = document.createElement('div');
+        items.slice(0, 3).forEach(it => {
+          const title = it.title || it.label || 'Untitled';
+          const when  = it.date ? new Date(it.date).toLocaleString() : '';
+          const where = it.sectionTitle || it.hansardHeading || it.where || '';
+          const ext   = it.externalLocation;
+          // safe link: prefer official ext URL; else use a Hansard search by title+date
+          let link = ext && /^https?:\/\//i.test(ext) ? ext : (function(){
+            const p = new URLSearchParams({ searchTerm: title || 'Hansard' });
+            if (it.date) {
+              const d = new Date(it.date);
+              if (!isNaN(d)) {
+                const y = d.getFullYear(), m = String(d.getMonth()+1).padStart(2,'0'), dd = String(d.getDate()).padStart(2,'0');
+                p.set('startDate', `${y}-${m}-${dd}`);
+                p.set('endDate',   `${y}-${m}-${dd}`);
+              }
+            }
+            return 'https://hansard.parliament.uk/search?' + p.toString();
+          })();
+
+          const card = document.createElement('div');
+          card.style.cssText = 'border:1px solid #e5e5e5;border-radius:10px;padding:.75rem 1rem;margin:.5rem 0;';
+          card.innerHTML = `
+            <div style="color:#666;font-size:.95rem;">${[when, where].filter(Boolean).join(' • ')}</div>
+            <div style="font-weight:600;margin:.25rem 0;">${title}</div>
+            <a href="${link}" target="_blank" rel="noreferrer">${link}</a>
+          `;
+          list.appendChild(card);
+        });
+        $results.appendChild(list);
       } catch (err) {
-        $results.innerHTML = '<div class="error">Error loading feed: ' + err.message + '</div>';
+        $results.innerHTML = '<div class="err">❌ Error fetching feed: ' + err.message + '</div>';
       }
-    }
-
-    // === Client-side filtering ===
-    function filterItems(q) {
-      const src = window.__HANSARD_ITEMS__ || [];
-      const s = (q || "").trim().toLowerCase();
-      if (!s) return src;
-      return src.filter(it => {
-        const title = (it.title || it.label || "").toLowerCase();
-        const topic = (it?.topic?.prefLabel || "").toLowerCase();
-        const where = (it?.sectionTitle || it?.hansardHeading || it?.where || "").toLowerCase();
-        return title.includes(s) || topic.includes(s) || where.includes(s);
-      });
-    }
-
-    // === Render ===
-    function render(items) {
-      if (!items.length) {
-        $results.innerHTML = '<div class="empty">No results found.</div>';
-        return;
-      }
-      const frag = document.createDocumentFragment();
-      items.forEach(it => {
-        const card = document.createElement("div");
-        card.className = "card";
-        const title = it.title || it.label || "Untitled";
-        const date  = it.date ? fmtDate(it.date) : "";
-        const where = it.sectionTitle || it.hansardHeading || it.where || "";
-        const link  = safeLink(it);
-        card.innerHTML = `
-          <div class="meta">${[date, where].filter(Boolean).join(" • ")}</div>
-          <div class="title">${title}</div>
-          <a href="${link}" target="_blank" rel="noreferrer">${link}</a>
-        `;
-        frag.appendChild(card);
-      });
-      $results.innerHTML = "";
-      $results.appendChild(frag);
-    }
-
-    // Wire up search
-    function doSearch() { render(filterItems($search.value)); }
-    $btn.addEventListener("click", doSearch);
-    $search.addEventListener("keydown", e => { if (e.key === "Enter") doSearch(); });
-
-    // Kick off
-    loadFeed();
+    })();
   </script>
 </body>
 </html>
