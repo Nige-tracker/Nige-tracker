@@ -1,86 +1,122 @@
-// api/interests.js
-// Rewire Interests → TheyWorkForYou / ParlParse (Datasette)
-// Returns a unified shape your frontend can render directly.
+// modules/interests.js
+import { fmtDate, el, escapeHtml, inLastDays, monthKey } from "./util.js";
 
-const DEFAULT_MEMBER = 5091; // Nigel Farage (MNIS id)
-const DATASET_BASE =
-  "https://data.mysociety.org/datasette/mysoc/parl_register_interests/commons_rmfi/latest";
+export async function renderInterests(root, memberId) {
+  root.innerHTML = `<div class="empty">Loading register entries…</div>`;
 
-async function j(url) {
-  const res = await fetch(url, { headers: { Accept: "application/json" } });
-  if (!res.ok) throw new Error(`Upstream ${res.status}: ${await res.text().catch(()=>res.statusText)}`);
-  return res.json();
-}
+  // Header with total + mini chart
+  const header = el(`
+    <div class="card" style="display:flex;gap:1rem;align-items:center;flex-wrap:wrap;">
+      <div>
+        <div class="title">Declared payments in the last 12 months</div>
+        <div class="meta"><span id="int-total">£0.00</span></div>
+      </div>
+      <canvas id="int-chart" width="560" height="120" style="max-width:100%;flex:1 1 320px;border:1px solid #e5e5e5;border-radius:8px"></canvas>
+    </div>
+  `);
+  const listWrap = el(`<div></div>`);
 
-// Query one table (filtered by mnis_id)
-async function getTable(table, mnisId) {
-  const u = new URL(`${DATASET_BASE}/${encodeURIComponent(table)}.json`);
-  u.searchParams.set("_shape", "array");
-  u.searchParams.set("_size", "max");
-  u.searchParams.set("mnis_id", String(mnisId));
-  return j(u.toString());
-}
-
-// Map rows from multiple tables → common item format
-function normalize({ table, rows }) {
-  const items = [];
-  for (const r of rows) {
-    const when =
-      r.received_date ||
-      r.registered ||
-      r.published ||
-      r.updated_1 ||
-      r.updated_2 ||
-      r.updated_3 ||
-      null;
-
-    const amount =
-      typeof r.value === "number" ? r.value
-      : typeof r["donors__value_1"] === "number" ? r["donors__value_1"]
-      : null;
-
-    const source =
-      r.payer_name ||
-      r.ultimate_payer_name ||
-      r.donor_name ||
-      r["donors__name_1"] ||
-      r.donor_company_name ||
-      "";
-
-    const summary = r.summary || "";
-    const category = r.category || table;
-    const link = r.link || null;
-
-    items.push({ when, amount, source, summary, category, link, table, raw: r });
-  }
-  return items;
-}
-
-export default async function handler(req, res) {
   try {
-    const memberId = Number(req.query.MemberId || req.query.memberId || DEFAULT_MEMBER);
-    const take = Math.max(1, Math.min(500, Number(req.query.Take || 100)));
+    // Hit our serverless function (rewired to TWFY dataset)
+    const url = new URL(`/api/interests`, window.location.origin);
+    url.searchParams.set("MemberId", String(memberId));
+    url.searchParams.set("Take", "200");
+    const res = await fetch(url.toString(), { headers: { Accept: "application/json" } });
+    if (!res.ok) {
+      let detail = ""; try { detail = await res.text(); } catch {}
+      throw new Error(`HTTP ${res.status}${detail ? ` — ${detail}` : ""}`);
+    }
+    const data = await res.json();
+    const items = Array.isArray(data?.items) ? data.items : [];
 
-    // Pull a few core categories; add more later if needed
-    const [adHoc, ongoing, donations, visits] = await Promise.all([
-      getTable("Category 1.1", memberId), // Employment & earnings — Ad hoc
-      getTable("Category 1.2", memberId), // Employment & earnings — Ongoing paid employment
-      getTable("Category 2",   memberId), // Donations and other support
-      getTable("Category 4",   memberId), // Visits outside the UK
-    ]);
+    if (!items.length) {
+      root.innerHTML = `<div class="empty">No entries returned for this member.</div>`;
+      return;
+    }
 
-    let items = []
-      .concat(normalize({ table: "Employment and earnings — Ad hoc", rows: adHoc }))
-      .concat(normalize({ table: "Employment and earnings — Ongoing", rows: ongoing }))
-      .concat(normalize({ table: "Donations and other support", rows: donations }))
-      .concat(normalize({ table: "Visits outside the UK", rows: visits }));
+    // ---- Totals + monthly chart (last 12 months, using structured amounts) ----
+    const paymentsLastYear = items.filter(
+      it => typeof it.amount === "number" && !isNaN(it.amount) && inLastDays(it.when, 365)
+    );
+    const total = paymentsLastYear.reduce((acc, it) => acc + it.amount, 0);
 
-    items.sort((a, b) => new Date(b.when || 0) - new Date(a.when || 0));
-    if (items.length > take) items = items.slice(0, take);
+    const months = [];
+    const start = new Date(); start.setMonth(start.getMonth() - 11); start.setDate(1);
+    for (let i = 0; i < 12; i++) {
+      const d = new Date(start.getFullYear(), start.getMonth() + i, 1);
+      months.push(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`);
+    }
+    const byMonth = Object.fromEntries(months.map(k => [k, 0]));
+    for (const it of paymentsLastYear) {
+      const k = monthKey(it.when);
+      if (byMonth[k] != null) byMonth[k] += it.amount;
+    }
 
-    res.setHeader("Cache-Control", "s-maxage=3600, stale-while-revalidate=86400");
-    res.status(200).json({ items, source: "mysociety/parlparse-datasette" });
+    // Render header
+    root.innerHTML = "";
+    root.appendChild(header);
+    document.getElementById("int-total").textContent =
+      "£" + total.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+    // Tiny bar chart
+    try {
+      const canvas = document.getElementById("int-chart");
+      const ctx = canvas.getContext("2d");
+      const W = canvas.width, H = canvas.height;
+      ctx.clearRect(0, 0, W, H);
+      const vals = months.map(k => byMonth[k]);
+      const max = Math.max(1, ...vals);
+      const pad = 24;
+      const chartW = W - pad * 2, chartH = H - pad * 2;
+      const barW = (chartW / months.length) * 0.7;
+      const gap = (chartW / months.length) - barW;
+
+      ctx.strokeStyle = "#ddd";
+      ctx.beginPath(); ctx.moveTo(pad, H - pad); ctx.lineTo(W - pad, H - pad);
+      ctx.moveTo(pad, pad); ctx.lineTo(pad, H - pad); ctx.stroke();
+
+      ctx.fillStyle = "#6aa6ff";
+      months.forEach((k, i) => {
+        const v = vals[i];
+        const h = (v / max) * (chartH - 2);
+        const x = pad + i * (barW + gap) + gap / 2;
+        const y = H - pad - h;
+        ctx.fillRect(x, y, barW, h);
+      });
+
+      ctx.fillStyle = "#666";
+      ctx.font = "12px system-ui, sans-serif";
+      ctx.fillText("£" + Math.round(max).toLocaleString(), pad + 4, pad + 12);
+    } catch {}
+
+    // ---- Cards (use structured `source`, `amount`, `summary`) ----
+    const frag = document.createDocumentFragment();
+    items.forEach(it => {
+      const meta = [it.when ? fmtDate(it.when) : "", it.category].filter(Boolean).join(" • ");
+      const src = it.source || "Source not specified";
+      const amountStr = (typeof it.amount === "number" && !isNaN(it.amount))
+        ? "£" + it.amount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+        : "£—";
+      const body = it.summary ? `<div>${escapeHtml(it.summary)}</div>` : "";
+      const link = it.link ? `<div class="meta"><a href="${escapeHtml(it.link)}" target="_blank" rel="noreferrer">Parliament record</a></div>` : "";
+
+      const card = el(`
+        <article class="card">
+          <div class="meta">${escapeHtml(meta)}</div>
+          <div class="title">${escapeHtml(src)}</div>
+          ${body}
+          <div class="meta">Amount: ${amountStr}</div>
+          ${link}
+        </article>
+      `);
+      frag.appendChild(card);
+    });
+
+    listWrap.innerHTML = "";
+    listWrap.appendChild(frag);
+    root.appendChild(listWrap);
+
   } catch (err) {
-    res.status(500).json({ error: String(err?.message || err) });
+    root.innerHTML = `<div class="error">Couldn’t load interests: ${escapeHtml(err.message)}</div>`;
   }
 }
