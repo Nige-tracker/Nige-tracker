@@ -1,40 +1,33 @@
-// /api/interests.js
-// Node.js Serverless version (NOT Edge) to avoid opaque Edge "internal error"
-export const config = { runtime: 'nodejs18.x' }; // or 'nodejs20.x' if enabled
+// api/interests.js
+// Edge runtime proxy for TheyWorkForYou/ParlParse Datasette (Register of Interests)
 
-// ---------- helpers ----------
-function parseNumber(n) {
-  if (n === null || n === undefined || n === '') return null;
-  const cleaned = String(n).replace(/[£,]/g, '').trim();
-  const asNum = Number(cleaned);
-  return Number.isFinite(asNum) ? asNum : null;
-}
+export const config = { runtime: 'edge' };
 
-function toISO(d) {
-  if (!d) return null;
-  return /^\d{4}-\d{2}-\d{2}$/.test(d) ? `${d}T00:00:00Z` : d;
-}
+// --- tiny utils ---
+const num = (v) => {
+  if (v == null || v === '') return null;
+  const n = Number(String(v).replace(/[£,\s]/g, ''));
+  return Number.isFinite(n) ? n : null;
+};
+const iso = (d) => (d && /^\d{4}-\d{2}-\d{2}$/.test(d) ? `${d}T00:00:00Z` : (d || null));
 
-// replace your existing mapRow with this:
+// --- map a wide variety of ParlParse column names into one stable shape ---
 function mapRow(r) {
-  // Find a source/payer string across common ParlParse/TWFY variants
-  const payerStr =
+  const payer =
     r.payer ??
+    r.value_from ??
     r.donor ??
     r.source ??
-    r.payer_name ??
     r.organisation ??
-    r.organization ??            // US spelling just in case
+    r.organization ??
     r.company ??
     r.employer ??
-    r.value_from ??
     r.from ??
     r.provider ??
     r.sponsor ??
     null;
 
-  // Prefer any numeric-looking money field; keep a human label too
-  const rawLabel =
+  const amountLabel =
     r.amount ??
     r.value ??
     r.received_value ??
@@ -44,34 +37,38 @@ function mapRow(r) {
     r.net_value ??
     null;
 
-  // Numeric parse that tolerates "£" and commas
-  const parseNum = (v) => {
-    if (v == null || v === '') return null;
-    const num = Number(String(v).replace(/[£,\s]/g, ''));
-    return Number.isFinite(num) ? num : null;
-  };
-
-  const amountNum =
-    parseNum(r.amount) ??
-    parseNum(r.value) ??
-    parseNum(r.received_value) ??
-    parseNum(r.donation_value) ??
-    parseNum(r.payment_value) ??
-    parseNum(r.gross_value) ??
-    parseNum(r.net_value) ??
+  const amount =
+    num(r.amount) ??
+    num(r.value) ??
+    num(r.received_value) ??
+    num(r.donation_value) ??
+    num(r.payment_value) ??
+    num(r.gross_value) ??
+    num(r.net_value) ??
     null;
 
-  // Dates: prefer an explicit "received" date, fall back sensibly
-  const toISO = (d) => (d && /^\d{4}-\d{2}-\d{2}$/.test(d) ? `${d}T00:00:00Z` : (d || null));
   const received =
-    r.received_date ?? r.date_received ?? r.date_of_payment ?? r.payment_date ?? r.entry_date ?? r.date ?? null;
+    r.received ??
+    r.received_date ??
+    r.date_received ??
+    r.date_of_payment ??
+    r.payment_date ??
+    r.entry_date ??
+    r.date ??
+    null;
+
   const registered =
-    r.registered_date ?? r.date_registered ?? r.parsed_date ?? null;
+    r.registered ??
+    r.registered_date ??
+    r.date_registered ??
+    r.parsed_date ??
+    null;
 
   return {
     id:
       r.register_entry_id ??
-      `${r.person_id || r.member_id || r.mp_id || 'x'}-${received || registered || 'x'}-${payerStr || 'x'}`,
+      r.id ??
+      `${r.person_id || r.member_id || r.mp_id || 'x'}-${received || registered || 'x'}-${payer || 'x'}`,
 
     personId: r.person_id ?? r.member_id ?? r.mp_id ?? null,
     name: r.member_name ?? r.name ?? null,
@@ -80,200 +77,136 @@ function mapRow(r) {
     category: r.category ?? r.category_name ?? null,
     subcategory: r.subcategory ?? null,
 
-    payer: payerStr,                 // <-- string for UI
-    amount: amountNum,               // <-- numeric for charts
-    amountLabel: rawLabel,           // <-- keep raw human label if you show it
-
-    receivedDate: toISO(received),
-    registeredDate: toISO(registered),
+    payer: payer || 'Source not specified',
+    amount,
+    amountLabel, // keep raw label if you need to show exact text
+    receivedDate: iso(received),
+    registeredDate: iso(registered),
 
     purpose: r.purpose ?? r.description ?? r.details ?? r.nature ?? null,
     link: r.link ?? r.source_url ?? r.register_url ?? r.url ?? null,
 
-    _raw: r,                         // keep raw row for debug
+    _raw: r, // for debugging if needed
   };
 }
 
-
-function buildSQL({ start, end, payer, category, minAmount, maxAmount, personId, memberId }) {
+function buildSQL({ start, end, payer, category, personId }) {
+  // Table can be overridden via env (default assumed to be 'regmem_items')
+  const TABLE = process.env.TWFY_DATASETTE_TABLE_REGMEM || 'regmem_items';
+  // WHERE conditions (all optional)
   const where = [];
-  if (start) where.push('date(received_date) >= date(:start)');
-  if (end) where.push('date(received_date) <= date(:end)');
-  if (payer) where.push('(payer LIKE :payer OR donor LIKE :payer)');
+  if (start) where.push('date(received) >= date(:start) OR date(received_date) >= date(:start)');
+  if (end) where.push('date(received) <= date(:end) OR date(received_date) <= date(:end)');
+  if (payer) where.push('(payer LIKE :payer OR value_from LIKE :payer OR donor LIKE :payer OR source LIKE :payer)');
   if (category) where.push('(category = :category OR category_name = :category)');
-  if (personId) where.push('(person_id = :personId)');
-  if (memberId) where.push('(member_id = :memberId OR mp_id = :memberId)');
-  if (minAmount) where.push('CAST(REPLACE(REPLACE(IFNULL(amount, value), ",", ""), "£", "") AS REAL) >= :minAmount');
-  if (maxAmount) where.push('CAST(REPLACE(REPLACE(IFNULL(amount, value), ",", ""), "£", "") AS REAL) <= :maxAmount');
+  if (personId) where.push('(person_id = :personId OR member_id = :personId OR mp_id = :personId)');
 
   const whereSQL = where.length ? `WHERE ${where.join(' AND ')}` : '';
 
-  // IMPORTANT: Change `register_interests` if your Datasette uses a different table/view.
+  // Select a superset of likely columns across TWFY/ParlParse deployments
   return `
     SELECT
+      id,
       register_entry_id,
-      person_id,
-      member_id,
-      mp_id,
-      member_name,
-      constituency,
-      category,
-      category_name,
-      subcategory,
-      payer,
-      donor,
-      source,
-      amount,
-      value,
-      received_value,
-      donation_value,
-      received_date,
-      date_received,
-      entry_date,
-      date,
-      registered_date,
-      date_registered,
-      parsed_date,
-      purpose,
-      description,
-      details,
-      link,
-      source_url,
-      register_url
-    FROM register_interests
+      person_id, member_id, mp_id,
+      member_name, constituency,
+      category, category_name, subcategory,
+      payer, value_from, donor, source, organisation, organization, company, employer, provider, sponsor, "from",
+      amount, value, received_value, donation_value, payment_value, gross_value, net_value,
+      received, received_date, date_received, date_of_payment, payment_date, entry_date, date,
+      registered, registered_date, date_registered, parsed_date,
+      purpose, description, details, nature,
+      link, source_url, register_url, url
+    FROM ${TABLE}
     ${whereSQL}
-    ORDER BY date(received_date) DESC NULLS LAST, date_registered DESC NULLS LAST
+    ORDER BY date(received) DESC NULLS LAST, date(received_date) DESC NULLS LAST, date(registered) DESC NULLS LAST
     LIMIT :limit
     OFFSET :offset
   `;
 }
 
-// ---------- handler (Node.js style) ----------
-export default async function handler(req, res) {
-  // Support both Next/Vercel req.url and absolute construction
-  const fullUrl =
-    typeof req.url === 'string' && req.url.startsWith('http')
-      ? req.url
-      : `https://dummy${req.url || ''}`; // prefix to satisfy URL() when path-only
-  const url = new URL(fullUrl);
-  const searchParams = url.searchParams;
-  const diag = searchParams.get('diag') === '1';
-
+export default async function handler(req) {
   try {
-    // New param names
-    const start = searchParams.get('start');
-    const end = searchParams.get('end');
-    const payer = searchParams.get('payer');
-    const category = searchParams.get('category');
-    const minAmount = searchParams.get('minAmount');
-    const maxAmount = searchParams.get('maxAmount');
+    const u = new URL(req.url);
+    const p = u.searchParams;
 
-    // Person/member filters (new + legacy)
-    const personId = searchParams.get('personId') || searchParams.get('PersonId');
-    const memberId =
-      searchParams.get('memberId') ||
-      searchParams.get('MemberId') ||
-      searchParams.get('mpId');
+    // Filters (friendly names)
+    const start = p.get('start');   // 'YYYY-MM-DD'
+    const end = p.get('end');       // 'YYYY-MM-DD'
+    const payer = p.get('payer');   // substring
+    const category = p.get('category'); // exact
+    // Person: prefer personId; accept MemberId/mpId for compatibility
+    const personId = p.get('personId') || p.get('PersonId') || p.get('MemberId') || p.get('mpId');
 
-    // Pagination (new + legacy)
-    const limitRaw = searchParams.get('limit') ?? searchParams.get('Take') ?? '100';
-    const offsetRaw = searchParams.get('offset') ?? searchParams.get('Skip') ?? '0';
-    const limit = Math.min(parseInt(limitRaw, 10) || 100, 500);
-    const offset = parseInt(offsetRaw, 10) || 0;
+    const limit = Math.min(parseInt(p.get('limit') ?? p.get('Take') ?? '100', 10) || 100, 500);
+    const offset = parseInt(p.get('offset') ?? p.get('Skip') ?? '0', 10) || 0;
 
-    const BASE_URL = process.env.DATASETTE_BASE_URL; // e.g. https://parlparse.example.com
-    const DB = process.env.DATASETTE_DB || 'parlparse';
-
-    if (!BASE_URL) {
-      return res.status(500).json({
-        error: 'Missing DATASETTE_BASE_URL env var',
-        hint: 'Set this in Vercel → Project → Settings → Environment Variables',
-        diag: diag ? { haveBaseUrl: !!BASE_URL, db: DB } : undefined,
-      });
+    const BASE = process.env.TWFY_DATASETTE_BASE_URL;
+    const DB = process.env.TWFY_DATASETTE_DB || 'parlparse';
+    if (!BASE) {
+      return new Response(JSON.stringify({ error: 'Missing TWFY_DATASETTE_BASE_URL' }), { status: 500 });
     }
 
-    const sql = buildSQL({ start, end, payer, category, minAmount, maxAmount, personId, memberId });
+    const sql = buildSQL({ start, end, payer, category, personId });
+
     const params = {
       start,
       end,
       payer: payer ? `%${payer}%` : undefined,
       category,
-      minAmount: minAmount ? Number(minAmount) : undefined,
-      maxAmount: maxAmount ? Number(maxAmount) : undefined,
       personId,
-      memberId,
       limit,
       offset,
     };
 
-    const dsURL = new URL(`${BASE_URL}/${DB}.json`);
-    dsURL.searchParams.set('sql', sql);
+    const ds = new URL(`${BASE}/${DB}.json`);
+    ds.searchParams.set('sql', sql);
     Object.entries(params).forEach(([k, v]) => {
-      if (v !== undefined && v !== null && v !== '') dsURL.searchParams.set(`_params.${k}`, String(v));
+      if (v !== undefined && v !== null && v !== '') ds.searchParams.set(`_params.${k}`, String(v));
     });
-    dsURL.searchParams.set('_shape', 'objects');
+    ds.searchParams.set('_shape', 'objects');
 
     const headers = {};
-    if (process.env.DATASETTE_TOKEN) headers.Authorization = `Bearer ${process.env.DATASETTE_TOKEN}`;
+    if (process.env.TWFY_DATASETTE_TOKEN) headers.Authorization = `Bearer ${process.env.TWFY_DATASETTE_TOKEN}`;
 
-    const constructedUrl = dsURL.toString();
-
-    const upstream = await fetch(constructedUrl, { headers });
-
-    if (!upstream.ok) {
-      const bodyText = await upstream.text();
-      return res.status(502).json({
-        error: 'Datasette error',
-        status: upstream.status,
-        detailSnippet: bodyText.slice(0, 500),
-        ...(diag ? { constructedUrl } : {}),
+    const r = await fetch(ds.toString(), { headers });
+    if (!r.ok) {
+      const t = await r.text();
+      return new Response(JSON.stringify({ error: 'Upstream Datasette', status: r.status, detail: t.slice(0, 400) }), {
+        status: 502,
+        headers: { 'content-type': 'application/json' },
       });
     }
 
-    const data = await upstream.json();
-    const rows = Array.isArray(data) ? data : data.rows || data;
+    const body = await r.json();
+    const rows = Array.isArray(body) ? body : body.rows || body;
 
     const seen = new Set();
-    const mapped = [];
-    for (const r of rows) {
-      const m = mapRow(r);
+    const out = [];
+    for (const row of rows) {
+      const m = mapRow(row);
       const key = m.id || JSON.stringify([m.personId, m.payer, m.receivedDate, m.amount]);
       if (seen.has(key)) continue;
       seen.add(key);
-      mapped.push(m);
+      out.push(m);
     }
-
     const hasMore = rows.length === limit;
 
-    const payload = {
-      results: mapped,
+    return new Response(JSON.stringify({
+      results: out,
       page: { limit, offset, nextOffset: hasMore ? offset + limit : null },
-      filters: {
-        start, end, payer, category,
-        minAmount: minAmount ?? null, maxAmount: maxAmount ?? null,
-        personId: personId ?? null, memberId: memberId ?? null
+      source: 'twfy-datasette',
+    }), {
+      status: 200,
+      headers: {
+        'content-type': 'application/json; charset=utf-8',
+        'cache-control': 'public, s-maxage=60, stale-while-revalidate=300',
       },
-      ...(diag ? {
-        diag: {
-          haveBaseUrl: !!BASE_URL,
-          db: DB,
-          constructedUrl,
-          upstreamCount: Array.isArray(rows) ? rows.length : (rows?.length ?? null),
-        }
-      } : {})
-    };
-
-    // Cache headers (ok on Node)
-    res.setHeader('cache-control', 'public, s-maxage=60, stale-while-revalidate=300');
-    return res.status(200).json(payload);
-  } catch (err) {
-    return res.status(500).json({
-      error: err?.message || String(err),
-      ...(diag ? { stack: err?.stack || null } : {}),
+    });
+  } catch (e) {
+    return new Response(JSON.stringify({ error: e.message || String(e) }), {
+      status: 500,
+      headers: { 'content-type': 'application/json' },
     });
   }
-}
-
-export default async function handler(req, res) {
-  res.status(200).json({ ok: true, runtime: "node" });
 }
