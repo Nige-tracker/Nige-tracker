@@ -6,13 +6,13 @@ import {
   parseAllGBP,
   inLastDays,
   monthKey,
-  extractSource
+  extractSource,
+  findOrgLike
 } from "./util.js";
 
-// Flip to true to show a faint debug line under each card with the detected source text
+// Turn on to see which line produced the source match
 const DEBUG = false;
 
-// Calls your same-origin Vercel proxy at /api/interests
 export async function renderInterests(root, memberId) {
   root.innerHTML = `<div class="empty">Loading register entries…</div>`;
 
@@ -25,21 +25,18 @@ export async function renderInterests(root, memberId) {
       <canvas id="int-chart" width="560" height="120" style="max-width:100%;flex:1 1 320px;border:1px solid #e5e5e5;border-radius:8px"></canvas>
     </div>
   `);
-
   const listWrap = el(`<div></div>`);
 
   try {
-    // Build URL to your Vercel function
     const url = new URL(`/api/interests`, window.location.origin);
     url.searchParams.set("MemberId", String(memberId));
-    url.searchParams.set("Take", "100"); // we sort client-side
+    url.searchParams.set("Take", "100");
 
     const res = await fetch(url.toString(), { headers: { Accept: "application/json" } });
     if (!res.ok) {
       let detail = ""; try { detail = await res.text(); } catch {}
       throw new Error(`HTTP ${res.status}${detail ? ` — ${detail}` : ""}`);
     }
-
     const data = await res.json();
     const items = Array.isArray(data?.items) ? data.items
                 : Array.isArray(data?.value) ? data.value
@@ -50,23 +47,20 @@ export async function renderInterests(root, memberId) {
       return;
     }
 
-    // --- Normalize entries: extract source + amounts (incl. child lines) ---
+    // --- Normalize entries ---
     const normalized = [];
 
     for (const it of items) {
-      const category =
-        it?.category?.name || it?.categoryName || it?.category || "Other";
-
+      const category = it?.category?.name || it?.categoryName || it?.category || "Other";
       const when =
         it?.registrationDate ||
         it?.publishedDate ||
         it?.registeredSince ||
         it?.registeredInterestCreated ||
         null;
-
       const text = it?.summary || it?.description || it?.registeredInterest || "";
 
-      // Collect candidate texts for source extraction (main + children)
+      // Gather candidate lines (main + children) for source and amounts
       const candidateTexts = [text];
       const children = Array.isArray(it?.childInterests || it?.children)
         ? (it.childInterests || it.children)
@@ -76,39 +70,41 @@ export async function renderInterests(root, memberId) {
         if (cText) candidateTexts.push(cText);
       }
 
-      // 1) Try labelled source in any candidate text (main first, then children)
+      // Try labelled/heuristic extraction over candidates
       let source = "";
-      let debugSrcFrom = "";
+      let dbgFrom = "";
       for (const ct of candidateTexts) {
         const s = extractSource(ct);
-        if (s) { source = s; debugSrcFrom = ct; break; }
+        if (s) { source = s; dbgFrom = ct; break; }
+      }
+      if (!source) {
+        // Aggressive org-like fallback over whole combined text
+        const combined = candidateTexts.join("  ");
+        const s2 = findOrgLike(combined);
+        if (s2) { source = s2; dbgFrom = combined; }
       }
 
-      // Amounts: gather £ tokens from all candidate texts
+      // Amounts: union of all "£…" tokens found
       let amounts = [];
       for (const ct of candidateTexts) amounts = amounts.concat(parseAllGBP(ct));
-
-      // Representative amount for the card = largest £ token found
       const amount = amounts.length ? Math.max(...amounts) : null;
 
-      // Clean body: drop “Payment received… / Date received… / Date paid…” lines (and bullet/whitespace variants)
+      // Clean body: drop “Payment received/Date received/Date paid/Received on …” lines
       const visibleText = (text || "")
         .split(/\n+/)
         .filter(line => !/^\s*(•|\*|-)?\s*(payment\s+(?:of\s+)?received|date\s+received|date\s+paid|received\s+on)\b/i.test(line))
         .join("\n")
         .trim();
 
-      normalized.push({ category, when, source, amount, text: visibleText, _dbg: debugSrcFrom });
+      normalized.push({ category, when, source, amount, text: visibleText, _dbg: dbgFrom });
     }
 
-    // --- Totals + monthly chart (last 12 months, only entries with a £ amount) ---
+    // --- Totals + chart (last 12 months) ---
     const paymentsLastYear = normalized.filter(n =>
       typeof n.amount === "number" && !isNaN(n.amount) && inLastDays(n.when, 365)
     );
-
     const total = paymentsLastYear.reduce((acc, n) => acc + n.amount, 0);
 
-    // Prepare last 12 month buckets
     const months = [];
     const start = new Date(); start.setMonth(start.getMonth() - 11); start.setDate(1);
     for (let i = 0; i < 12; i++) {
@@ -121,33 +117,27 @@ export async function renderInterests(root, memberId) {
       if (byMonth[k] != null) byMonth[k] += n.amount;
     }
 
-    // --- Render header (plain total + simple bars) ---
+    // Header
     root.innerHTML = "";
     root.appendChild(header);
     document.getElementById("int-total").textContent =
       "£" + total.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
+    // Tiny canvas bars
     try {
       const canvas = document.getElementById("int-chart");
       const ctx = canvas.getContext("2d");
       const W = canvas.width, H = canvas.height;
       ctx.clearRect(0, 0, W, H);
-
       const vals = months.map(k => byMonth[k]);
       const max = Math.max(1, ...vals);
       const pad = 24;
       const chartW = W - pad * 2, chartH = H - pad * 2;
       const barW = (chartW / months.length) * 0.7;
       const gap = (chartW / months.length) - barW;
-
-      // axes
       ctx.strokeStyle = "#ddd";
-      ctx.beginPath();
-      ctx.moveTo(pad, H - pad); ctx.lineTo(W - pad, H - pad);
-      ctx.moveTo(pad, pad); ctx.lineTo(pad, H - pad);
-      ctx.stroke();
-
-      // bars
+      ctx.beginPath(); ctx.moveTo(pad, H - pad); ctx.lineTo(W - pad, H - pad);
+      ctx.moveTo(pad, pad); ctx.lineTo(pad, H - pad); ctx.stroke();
       ctx.fillStyle = "#6aa6ff";
       months.forEach((k, i) => {
         const v = vals[i];
@@ -156,14 +146,12 @@ export async function renderInterests(root, memberId) {
         const y = H - pad - h;
         ctx.fillRect(x, y, barW, h);
       });
-
-      // y-axis label (max)
       ctx.fillStyle = "#666";
       ctx.font = "12px system-ui, sans-serif";
       ctx.fillText("£" + Math.round(max).toLocaleString(), pad + 4, pad + 12);
-    } catch { /* non-fatal */ }
+    } catch {}
 
-    // --- Render item cards (date • category • SOURCE • Amount) ---
+    // Cards
     const frag = document.createDocumentFragment();
     normalized
       .sort((a, b) => new Date(b.when || 0) - new Date(a.when || 0))
@@ -174,9 +162,8 @@ export async function renderInterests(root, memberId) {
             ? "£" + n.amount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
             : "£—";
         const body = n.text ? `<div>${escapeHtml(n.text)}</div>` : "";
-
         const debugLine = DEBUG && n._dbg
-          ? `<div class="meta" style="opacity:.6">debug: matched from “${escapeHtml(n._dbg.slice(0, 140))}${n._dbg.length>140?'…':''}”</div>`
+          ? `<div class="meta" style="opacity:.6">debug: matched from “${escapeHtml(n._dbg.slice(0, 200))}${n._dbg.length>200?'…':''}”</div>`
           : "";
 
         const card = el(`
