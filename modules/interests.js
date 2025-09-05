@@ -1,4 +1,12 @@
-import { fmtDate, el, escapeHtml, parseAllGBP, parseLargestGBP, inLastDays, monthKey } from "./util.js";
+import {
+  fmtDate,
+  el,
+  escapeHtml,
+  parseAllGBP,
+  inLastDays,
+  monthKey,
+  extractSource
+} from "./util.js";
 
 // Same-origin Vercel proxy: /api/interests
 export async function renderInterests(root, memberId) {
@@ -27,68 +35,54 @@ export async function renderInterests(root, memberId) {
     }
     const data = await res.json();
     const items = Array.isArray(data?.items) ? data.items : (Array.isArray(data?.value) ? data.value : []);
-
     if (!items.length) {
       root.innerHTML = `<div class="empty">No entries returned for this member.</div>`;
       return;
     }
 
-    // --- Normalize entries ---
+    // --- Normalize entries, pulling source + amounts from narrative and children ---
     const normalized = [];
     for (const it of items) {
       const category = it?.category?.name || it?.categoryName || it?.category || "Other";
       const when = it?.registrationDate || it?.publishedDate || it?.registeredSince || it?.registeredInterestCreated || null;
       const text = it?.summary || it?.description || it?.registeredInterest || "";
 
-      // Try structured source first
-      let source =
-        it?.sponsor?.name || it?.donor?.name || it?.employer?.name || it?.company?.name || it?.source || "";
+      // Source: explicit structured fields are rarely present; extract from text
+      let source = extractSource(text);
 
-      // Heuristic: look for "from <name>" at the start of the text
-      if (!source) {
-        const m = /(?:^|[.;]\s*)from\s+([^,–—\-]+?)(?:,|\s+for\b|\s+-|$)/i.exec(text);
-        if (m && m[1]) source = m[1].trim();
-      }
-      if (!source) source = ""; // will display "Source not specified"
+      // Amounts: scan all "£..." tokens in main text
+      let amounts = parseAllGBP(text);
 
-      // Amounts: scan all £ in main text
-      const mainAmts = parseAllGBP(text);
-
-      // Also flatten child interests, capturing more amounts & potential sources
+      // Children often contain separate "Payment received…" lines with the real amounts/source
       const children = Array.isArray(it?.childInterests || it?.children) ? (it.childInterests || it.children) : [];
-      const childEntries = [];
       for (const c of children) {
         const cText = c?.summary || c?.description || c?.registeredInterest || "";
-        const cWhen = c?.registrationDate || c?.publishedDate || c?.registeredSince || when;
-        const cSrc = c?.sponsor?.name || c?.donor?.name || c?.employer?.name || c?.company?.name || "";
-        const cAmts = parseAllGBP(cText);
-        childEntries.push({ text: cText, when: cWhen, source: cSrc, amounts: cAmts });
+        // Lift a better source if present in a child line
+        if (!source) source = extractSource(cText);
+        amounts = amounts.concat(parseAllGBP(cText));
       }
 
-      // Choose a representative amount for the card: prefer the largest single £ in the entry (including children)
-      const allAmts = [...mainAmts, ...childEntries.flatMap(x => x.amounts)];
-      const cardAmount = allAmts.length ? Math.max(...allAmts) : null;
+      // Representative amount for this card: pick the **largest** found
+      const amount = amounts.length ? Math.max(...amounts) : null;
 
-      // Clean the visible body text: drop repeated bare "Payment received..." lines (we show amount separately)
+      // Clean visible body: drop bare "Payment received" lines so we don’t duplicate
       const visibleText = (text || "")
         .split(/\n+/)
         .filter(line => !/^payment received/i.test(line.trim()))
         .join("\n")
         .trim();
 
-      normalized.push({
-        category, when, source, amount: cardAmount, text: visibleText, childEntries
-      });
+      normalized.push({ category, when, source, amount, text: visibleText });
     }
 
-    // --- Compute last-12-month payments for totals/chart ---
+    // --- Totals + monthly chart for last 12 months (only entries with a £ amount) ---
     const paymentsLastYear = normalized.filter(n =>
       typeof n.amount === "number" && !isNaN(n.amount) && inLastDays(n.when, 365)
     );
 
-    // Sum, bucket by month
     const total = paymentsLastYear.reduce((acc, n) => acc + n.amount, 0);
-    const months = [];  // last 12 months YYYY-MM
+
+    const months = [];
     const start = new Date(); start.setMonth(start.getMonth() - 11); start.setDate(1);
     for (let i = 0; i < 12; i++) {
       const d = new Date(start.getFullYear(), start.getMonth() + i, 1);
@@ -100,7 +94,7 @@ export async function renderInterests(root, memberId) {
       if (byMonth[k] != null) byMonth[k] += n.amount;
     }
 
-    // --- Render header with total + chart ---
+    // --- Render header (plain total + bars) ---
     root.innerHTML = "";
     root.appendChild(header);
     document.getElementById("int-total").textContent = "£" + Math.round(total).toLocaleString();
@@ -135,25 +129,25 @@ export async function renderInterests(root, memberId) {
       ctx.fillStyle = "#666";
       ctx.font = "12px system-ui, sans-serif";
       ctx.fillText("£" + Math.round(max).toLocaleString(), pad + 4, pad + 12);
-    } catch { /* ignore */ }
+    } catch { /* non-fatal */ }
 
-    // --- Render item cards: date • category • SOURCE • Amount ---
+    // --- Render item cards (plain amount text; no lozenge) ---
     const frag = document.createDocumentFragment();
     normalized
       .sort((a, b) => new Date(b.when || 0) - new Date(a.when || 0))
       .forEach(n => {
-        const source = n.source ? escapeHtml(n.source) : "Source not specified";
+        const src = n.source ? escapeHtml(n.source) : "Source not specified";
         const amountStr = (typeof n.amount === "number" && !isNaN(n.amount))
           ? "£" + n.amount.toLocaleString(undefined, { maximumFractionDigits: 2 })
           : "£—";
-
         const body = n.text ? `<div>${escapeHtml(n.text)}</div>` : "";
+
         const card = el(`
           <article class="card">
             <div class="meta">${[fmtDate(n.when), n.category].filter(Boolean).join(" • ")}</div>
-            <div class="title">${source}</div>
+            <div class="title">${src}</div>
             ${body}
-            <div class="row"><span class="badge">Amount: ${amountStr}</span></div>
+            <div class="meta">Amount: ${amountStr}</div>
           </article>
         `);
         frag.appendChild(card);
