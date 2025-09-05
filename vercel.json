@@ -1,7 +1,0 @@
-{
-  "functions": {
-    "api/twfy.js": {
-      "runtime": "@vercel/node@18.x"
-    }
-  }
-}
