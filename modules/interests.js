@@ -1,39 +1,43 @@
 // modules/interests.js
-function gbp(n) {
-  if (n == null) return null;
-  try {
-    return new Intl.NumberFormat('en-GB', { style: 'currency', currency: 'GBP', maximumFractionDigits: 2 }).format(n);
-  } catch {
-    return `£${n}`
-  }
+import { mapParliamentItem } from './parliament-interests-adapter';
+
+function safeDate(d) {
+  return d ? new Date(d).toLocaleDateString('en-GB') : null;
 }
 
-function stabilise(item) {
-  const payer = typeof item.payer === 'string' ? item.payer : (item.payer != null ? String(item.payer) : 'Source not specified');
-  const amountPretty = item.amount != null ? gbp(item.amount) : null;
-
-  return {
-    ...item,
-    payer,
-    amountPretty,
-    receivedPretty: item.receivedDate ? new Date(item.receivedDate).toLocaleDateString('en-GB') : null,
-    registeredPretty: item.registeredDate ? new Date(item.registeredDate).toLocaleDateString('en-GB') : null,
-  };
-}
-
-export async function fetchInterests({ personId, start, end, payer, category, limit = 100, offset = 0 } = {}) {
+export async function fetchInterests({ url = '/api/interests', params = {} } = {}) {
+  // Build query string from params (supports both Parliament params like MemberId and your own)
   const qs = new URLSearchParams();
-  if (personId) qs.set('personId', String(personId));
-  if (start) qs.set('start', start);
-  if (end) qs.set('end', end);
-  if (payer) qs.set('payer', payer);
-  if (category) qs.set('category', category);
-  qs.set('limit', String(limit));
-  qs.set('offset', String(offset));
+  for (const [k, v] of Object.entries(params)) {
+    if (v !== undefined && v !== null && v !== '') qs.set(k, String(v));
+  }
 
-  const res = await fetch(`/api/interests?${qs.toString()}`);
-  if (!res.ok) throw new Error(`Interests API ${res.status}`);
+  const res = await fetch(`${url}?${qs.toString()}`);
+  if (!res.ok) throw new Error(`Interests fetch failed ${res.status}`);
   const data = await res.json();
-  const results = Array.isArray(data.results) ? data.results.map(stabilise) : [];
-  return { results, page: data.page ?? { limit, offset, nextOffset: null } };
+
+  let results = [];
+  // Parliament shape → { items: [...] }
+  if (Array.isArray(data.items)) {
+    results = data.items.map(mapParliamentItem);
+  }
+  // Already-normalised shape → { results: [...] }
+  else if (Array.isArray(data.results)) {
+    results = data.results;
+  }
+
+  // light post-formatting for display convenience
+  results = results.map(r => ({
+    ...r,
+    receivedPretty: safeDate(r.receivedDate),
+    registeredPretty: safeDate(r.registeredDate),
+  }));
+
+  const page = data.page ?? {
+    limit: data.take ?? results.length,
+    offset: data.skip ?? 0,
+    nextOffset: (data.skip ?? 0) + (data.take ?? results.length),
+  };
+
+  return { results, page };
 }
