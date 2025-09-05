@@ -9,6 +9,9 @@ import {
   extractSource
 } from "./util.js";
 
+// Flip to true to show a faint debug line under each card with the detected source text
+const DEBUG = false;
+
 // Calls your same-origin Vercel proxy at /api/interests
 export async function renderInterests(root, memberId) {
   root.innerHTML = `<div class="empty">Loading register entries…</div>`;
@@ -17,7 +20,7 @@ export async function renderInterests(root, memberId) {
     <div class="card" style="display:flex;gap:1rem;align-items:center;flex-wrap:wrap;">
       <div>
         <div class="title">Declared payments in the last 12 months</div>
-        <div class="meta"><span id="int-total">£0</span></div>
+        <div class="meta"><span id="int-total">£0.00</span></div>
       </div>
       <canvas id="int-chart" width="560" height="120" style="max-width:100%;flex:1 1 320px;border:1px solid #e5e5e5;border-radius:8px"></canvas>
     </div>
@@ -63,40 +66,39 @@ export async function renderInterests(root, memberId) {
 
       const text = it?.summary || it?.description || it?.registeredInterest || "";
 
-      // 1) Prefer labelled source in main narrative
-      let source = extractSource(text);
-
-      // 2) Scan children for better labelled payer + extra amounts
+      // Collect candidate texts for source extraction (main + children)
+      const candidateTexts = [text];
       const children = Array.isArray(it?.childInterests || it?.children)
         ? (it.childInterests || it.children)
         : [];
-
-      let amounts = parseAllGBP(text);
-
       for (const c of children) {
         const cText = c?.summary || c?.description || c?.registeredInterest || "";
-        const childSrc = extractSource(cText);
-        if (!source && childSrc) source = childSrc; // prefer labelled child source if main was blank
-        amounts = amounts.concat(parseAllGBP(cText)); // collect child £ tokens
+        if (cText) candidateTexts.push(cText);
       }
 
-      // 3) Fallback: first chunk heuristic if still blank
-      if (!source) {
-        const firstChunk = (text || "").split(/\n+/)[0]?.split(/[-–—]|,|;/)[0]?.trim() || "";
-        if (firstChunk && firstChunk.length > 3) source = firstChunk;
+      // 1) Try labelled source in any candidate text (main first, then children)
+      let source = "";
+      let debugSrcFrom = "";
+      for (const ct of candidateTexts) {
+        const s = extractSource(ct);
+        if (s) { source = s; debugSrcFrom = ct; break; }
       }
 
-      // representative amount = largest £ token found
+      // Amounts: gather £ tokens from all candidate texts
+      let amounts = [];
+      for (const ct of candidateTexts) amounts = amounts.concat(parseAllGBP(ct));
+
+      // Representative amount for the card = largest £ token found
       const amount = amounts.length ? Math.max(...amounts) : null;
 
-      // Clean body: drop "Payment received..." / "Date received..." / "Date paid..." lines (any leading whitespace/bullets)
+      // Clean body: drop “Payment received… / Date received… / Date paid…” lines (and bullet/whitespace variants)
       const visibleText = (text || "")
         .split(/\n+/)
         .filter(line => !/^\s*(•|\*|-)?\s*(payment\s+(?:of\s+)?received|date\s+received|date\s+paid|received\s+on)\b/i.test(line))
         .join("\n")
         .trim();
 
-      normalized.push({ category, when, source, amount, text: visibleText });
+      normalized.push({ category, when, source, amount, text: visibleText, _dbg: debugSrcFrom });
     }
 
     // --- Totals + monthly chart (last 12 months, only entries with a £ amount) ---
@@ -173,12 +175,17 @@ export async function renderInterests(root, memberId) {
             : "£—";
         const body = n.text ? `<div>${escapeHtml(n.text)}</div>` : "";
 
+        const debugLine = DEBUG && n._dbg
+          ? `<div class="meta" style="opacity:.6">debug: matched from “${escapeHtml(n._dbg.slice(0, 140))}${n._dbg.length>140?'…':''}”</div>`
+          : "";
+
         const card = el(`
           <article class="card">
             <div class="meta">${[fmtDate(n.when), n.category].filter(Boolean).join(" • ")}</div>
             <div class="title">${src}</div>
             ${body}
             <div class="meta">Amount: ${amountStr}</div>
+            ${debugLine}
           </article>
         `);
         frag.appendChild(card);
