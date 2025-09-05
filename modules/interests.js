@@ -1,50 +1,33 @@
+// modules/interests.js
 import { fmtDate, el, escapeHtml } from "./util.js";
 
-/**
- * Register of Members' Financial Interests (RMFI)
- * API docs: developer.parliament.uk → Interests API
- * Key gotchas:
- *  - Param names are case-sensitive: MemberId, Take, SortOrder, ExpandChildInterests
- *  - Some combinations/values can 400; fall back to simpler query
- */
+// Use same-origin relative path (works on your Vercel deployment)
+const INTERESTS_PROXY_BASE = ""; // leave empty to use relative /api path
+
 export async function renderInterests(root, memberId) {
   root.innerHTML = `<div class="empty">Loading register entries…</div>`;
 
-  async function fetchOnce(params) {
-    const url = new URL("https://interests-api.parliament.uk/api/v1/Interests");
-    for (const [k, v] of Object.entries(params)) url.searchParams.set(k, String(v));
+  // Build URL against your Vercel site (same-origin)
+  const url = new URL(`/api/interests`, window.location.origin);
+  url.searchParams.set("MemberId", String(memberId));
+  url.searchParams.set("Take", "100");
+  url.searchParams.set("SortOrder", "PublishedDateDesc");
+  url.searchParams.set("ExpandChildInterests", "False");
+
+  try {
     const res = await fetch(url.toString(), { headers: { Accept: "application/json" } });
     if (!res.ok) {
-      // Try to read the error body (often includes why it 400'd)
       let detail = "";
       try { detail = await res.text(); } catch {}
       throw new Error(`HTTP ${res.status}${detail ? ` — ${detail}` : ""}`);
     }
-    return res.json();
-  }
-
-  try {
-    // 1) Preferred: explicit paging + ordering
-    let data;
-    try {
-      data = await fetchOnce({
-        MemberId: memberId,
-        Take: 100,
-        SortOrder: "PublishedDateDesc",
-        ExpandChildInterests: "False",
-      });
-    } catch (e) {
-      // 2) Fallback: minimal params (some deployments are stricter)
-      data = await fetchOnce({ MemberId: memberId, Take: 50 });
-    }
-
+    const data = await res.json();
     const items = data?.items || data?.value || [];
     if (!Array.isArray(items) || items.length === 0) {
       root.innerHTML = `<div class="empty">No entries returned for this member.</div>`;
       return;
     }
 
-    // Group by category name if present
     const groups = new Map();
     for (const it of items) {
       const cat = it?.category?.name || it?.categoryName || it?.category || "Other";
