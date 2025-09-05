@@ -11,8 +11,6 @@ export async function renderInterests(root, memberId) {
   const url = new URL(`/api/interests`, window.location.origin);
   url.searchParams.set("MemberId", String(memberId));
   url.searchParams.set("Take", "100");
-  url.searchParams.set("SortOrder", "PublishedDateDesc");
-  url.searchParams.set("ExpandChildInterests", "False");
 
   try {
     const res = await fetch(url.toString(), { headers: { Accept: "application/json" } });
