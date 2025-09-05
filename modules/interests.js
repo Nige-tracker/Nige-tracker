@@ -173,3 +173,21 @@ export async function renderInterests(root, memberId) {
         const body = n.text ? `<div>${escapeHtml(n.text)}</div>` : "";
 
         const card = el(`
+          <article class="card">
+            <div class="meta">${[fmtDate(n.when), n.category].filter(Boolean).join(" • ")}</div>
+            <div class="title">${src}</div>
+            ${body}
+            <div class="meta">Amount: ${amountStr}</div>
+          </article>
+        `);
+        frag.appendChild(card);
+      });
+
+    listWrap.innerHTML = "";
+    listWrap.appendChild(frag);
+    root.appendChild(listWrap);
+
+  } catch (err) {
+    root.innerHTML = `<div class="error">Couldn’t load interests: ${escapeHtml(err.message)}</div>`;
+  }
+}
