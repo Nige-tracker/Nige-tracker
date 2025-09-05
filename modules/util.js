@@ -45,3 +45,32 @@ export function monthKey(dateStr) {
   if (isNaN(d)) return "";
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`; // YYYY-MM
 }
+
+// Try to extract a named payer/source from narrative text.
+// Covers patterns like: "Name of donor: X", "Name of company: X", "Employer: X", "From: X"
+export function extractSource(text = "") {
+  if (!text) return "";
+
+  // Normalise whitespace and strip HTML if any
+  const t = String(text).replace(/\s+/g, " ").trim();
+
+  const patterns = [
+    /name of donor:\s*([^,.;\n]+(?: [^,.;\n]+)*)/i,
+    /name of company:\s*([^,.;\n]+(?: [^,.;\n]+)*)/i,
+    /employer:\s*([^,.;\n]+(?: [^,.;\n]+)*)/i,
+    /from:\s*([^,.;\n]+(?: [^,.;\n]+)*)/i,
+    /sponsor:\s*([^,.;\n]+(?: [^,.;\n]+)*)/i,
+    /payer:\s*([^,.;\n]+(?: [^,.;\n]+)*)/i
+  ];
+
+  for (const rx of patterns) {
+    const m = rx.exec(t);
+    if (m && m[1]) return m[1].trim();
+  }
+
+  // Heuristic fallback: take the first clause before a dash/comma if it looks like a name
+  const firstClause = t.split(/[-–—,]/)[0].trim();
+  if (firstClause && firstClause.length > 3) return firstClause;
+
+  return "";
+}
