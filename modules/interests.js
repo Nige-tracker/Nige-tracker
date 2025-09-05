@@ -40,27 +40,31 @@ export async function renderInterests(root, memberId) {
       return;
     }
 
-    // --- Normalize entries, pulling source + amounts from narrative and children ---
-    const normalized = [];
-    for (const it of items) {
-      const category = it?.category?.name || it?.categoryName || it?.category || "Other";
-      const when = it?.registrationDate || it?.publishedDate || it?.registeredSince || it?.registeredInterestCreated || null;
-      const text = it?.summary || it?.description || it?.registeredInterest || "";
+// 1) Try labelled source in the main narrative
+let source = extractSource(text);
 
-      // Source: explicit structured fields are rarely present; extract from text
-      let source = extractSource(text);
+// 2) Scan children: if any child has an explicit labelled payer, prefer that
+const children = Array.isArray(it?.childInterests || it?.children)
+  ? (it.childInterests || it.children)
+  : [];
+let amounts = parseAllGBP(text);
 
-      // Amounts: scan all "£..." tokens in main text
-      let amounts = parseAllGBP(text);
+for (const c of children) {
+  const cText = c?.summary || c?.description || c?.registeredInterest || "";
+  // Prefer a labelled source from a child entry if present
+  const childSrc = extractSource(cText);
+  if (!source && childSrc) source = childSrc;
 
-      // Children often contain separate "Payment received…" lines with the real amounts/source
-      const children = Array.isArray(it?.childInterests || it?.children) ? (it.childInterests || it.children) : [];
-      for (const c of children) {
-        const cText = c?.summary || c?.description || c?.registeredInterest || "";
-        // Lift a better source if present in a child line
-        if (!source) source = extractSource(cText);
-        amounts = amounts.concat(parseAllGBP(cText));
-      }
+  // Accumulate amounts from child lines
+  amounts = amounts.concat(parseAllGBP(cText));
+}
+
+// 3) Final fallback: if still blank, try a lightweight heuristic on the main text
+if (!source) {
+  const firstChunk = (text || "").split(/\n+/)[0]?.split(/[-–—]|,|;/)[0]?.trim() || "";
+  if (firstChunk && firstChunk.length > 3) source = firstChunk;
+}
+
 
       // Representative amount for this card: pick the **largest** found
       const amount = amounts.length ? Math.max(...amounts) : null;
