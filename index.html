@@ -1,86 +1,32 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8" />
-  <title>Hansard – Sanity Check</title>
+  <meta charset="utf-8" />
+  <title>Nige Tracker — Votes & Interests</title>
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <style>
-    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
-           max-width: 720px; margin: 2rem auto; padding: 0 1rem; line-height: 1.5; }
-    .ok { background:#ecfdf5; color:#065f46; border:1px solid #a7f3d0; padding:.75rem 1rem; border-radius:10px; }
-    .warn { background:#fff7ed; color:#9a3412; border:1px solid #fed7aa; padding:.75rem 1rem; border-radius:10px; }
-    .err { background:#fef2f2; color:#991b1b; border:1px solid #fecaca; padding:.75rem 1rem; border-radius:10px; }
-    code { background:#f6f6f6; padding:.1rem .25rem; border-radius:6px; }
-    #results { margin-top: 1rem; }
-  </style>
+  <link rel="icon" href="data:;base64,iVBORw0KGgo=" />
+  <link rel="stylesheet" href="./styles.css" />
 </head>
 <body>
-  <h1>Hansard – Sanity Check</h1>
-  <div id="status" class="warn">⏳ Checking…</div>
-  <div id="results"></div>
+  <header class="wrap">
+    <h1>Nigel Farage — Activity</h1>
+    <p class="muted">Member ID: <code id="memberId">5091</code></p>
+    <nav class="tabs">
+      <button data-tab="votes" class="active">Voting record</button>
+      <button data-tab="interests">Register of interests</button>
+    </nav>
+  </header>
 
-  <script>
-    const $status = document.getElementById('status');
-    const $results = document.getElementById('results');
+  <main class="wrap">
+    <section id="votes" class="panel"></section>
+    <section id="interests" class="panel hidden"></section>
+  </main>
 
-    // Step 1: confirm JS runs
-    $status.className = 'ok';
-    $status.textContent = '✅ JavaScript loaded and running';
+  <footer class="wrap small muted">
+    Data © UK Parliament (Open Parliament Licence). Unofficial viewer.
+  </footer>
 
-    // Step 2: try to fetch a reliable public feed
-    (async () => {
-      const url = new URL('https://lda.data.parliament.uk/proceedings.json');
-      url.searchParams.set('_pageSize', '10');
-      url.searchParams.set('_sort', '-date'); // newest first
-
-      try {
-        const res = await fetch(url.toString());
-        if (!res.ok) throw new Error('HTTP ' + res.status);
-
-        const data = await res.json();
-        const items = Array.isArray(data?.result?.items) ? data.result.items : [];
-        if (items.length === 0) {
-          $results.innerHTML = '<div class="warn">⚠️ Feed loaded but returned 0 items.</div>';
-          return;
-        }
-
-        $results.innerHTML = '<div class="ok">✅ Fetched ' + items.length + ' recent proceedings.</div>';
-
-        // show the first 3 items with safe links
-        const list = document.createElement('div');
-        items.slice(0, 3).forEach(it => {
-          const title = it.title || it.label || 'Untitled';
-          const when  = it.date ? new Date(it.date).toLocaleString() : '';
-          const where = it.sectionTitle || it.hansardHeading || it.where || '';
-          const ext   = it.externalLocation;
-          // safe link: prefer official ext URL; else use a Hansard search by title+date
-          let link = ext && /^https?:\/\//i.test(ext) ? ext : (function(){
-            const p = new URLSearchParams({ searchTerm: title || 'Hansard' });
-            if (it.date) {
-              const d = new Date(it.date);
-              if (!isNaN(d)) {
-                const y = d.getFullYear(), m = String(d.getMonth()+1).padStart(2,'0'), dd = String(d.getDate()).padStart(2,'0');
-                p.set('startDate', `${y}-${m}-${dd}`);
-                p.set('endDate',   `${y}-${m}-${dd}`);
-              }
-            }
-            return 'https://hansard.parliament.uk/search?' + p.toString();
-          })();
-
-          const card = document.createElement('div');
-          card.style.cssText = 'border:1px solid #e5e5e5;border-radius:10px;padding:.75rem 1rem;margin:.5rem 0;';
-          card.innerHTML = `
-            <div style="color:#666;font-size:.95rem;">${[when, where].filter(Boolean).join(' • ')}</div>
-            <div style="font-weight:600;margin:.25rem 0;">${title}</div>
-            <a href="${link}" target="_blank" rel="noreferrer">${link}</a>
-          `;
-          list.appendChild(card);
-        });
-        $results.appendChild(list);
-      } catch (err) {
-        $results.innerHTML = '<div class="err">❌ Error fetching feed: ' + err.message + '</div>';
-      }
-    })();
-  </script>
+  <!-- Main bootstrapping script -->
+  <script type="module" src="./main.js"></script>
 </body>
 </html>
