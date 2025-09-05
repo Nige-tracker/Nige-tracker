@@ -117,3 +117,16 @@ export function findOrgLike(text = "") {
   }
   return "";
 }
+// modules/util.js — add this
+export function normalizeNameKey(s = "") {
+  return String(s)
+    .toLowerCase()
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "") // strip accents
+    .replace(/[\s\u00A0]+/g, " ")
+    .replace(/[^\w\s&]/g, "")        // keep letters/digits/_ and '&'
+    .replace(/\b(ltd|limited|llp|plc|inc|corp|gmbh|sa|sas|bv|ag|co|company|holdings?|group)\b/g, "") // common suffixes
+    .replace(/\s*&\s*/g, " & ")      // normalize ampersand spacing
+    .trim();
+}
+
