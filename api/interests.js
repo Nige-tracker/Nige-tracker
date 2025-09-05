@@ -91,39 +91,38 @@ function mapRow(r) {
 }
 
 function buildSQL({ start, end, payer, category, personId }) {
-  // Table can be overridden via env (default assumed to be 'regmem_items')
-  const TABLE = process.env.TWFY_DATASETTE_TABLE_REGMEM || 'regmem_items';
-  // WHERE conditions (all optional)
+  const TABLE = process.env.TWFY_DATASETTE_TABLE_REGMEM || 'items';
   const where = [];
-  if (start) where.push('date(received) >= date(:start) OR date(received_date) >= date(:start)');
-  if (end) where.push('date(received) <= date(:end) OR date(received_date) <= date(:end)');
-  if (payer) where.push('(payer LIKE :payer OR value_from LIKE :payer OR donor LIKE :payer OR source LIKE :payer)');
-  if (category) where.push('(category = :category OR category_name = :category)');
-  if (personId) where.push('(person_id = :personId OR member_id = :personId OR mp_id = :personId)');
+  if (start) where.push('date(date) >= date(:start)');
+  if (end) where.push('date(date) <= date(:end)');
+  if (payer) where.push("(json_extract(item,'$.value_from') LIKE :payer)");
+  if (category) where.push('(category_id = :category)');
+  if (personId) where.push('(person_id = :personId OR member_id = :personId)');
 
   const whereSQL = where.length ? `WHERE ${where.join(' AND ')}` : '';
 
-  // Select a superset of likely columns across TWFY/ParlParse deployments
   return `
     SELECT
-      id,
-      register_entry_id,
-      person_id, member_id, mp_id,
-      member_name, constituency,
-      category, category_name, subcategory,
-      payer, value_from, donor, source, organisation, organization, company, employer, provider, sponsor, "from",
-      amount, value, received_value, donation_value, payment_value, gross_value, net_value,
-      received, received_date, date_received, date_of_payment, payment_date, entry_date, date,
-      registered, registered_date, date_registered, parsed_date,
-      purpose, description, details, nature,
-      link, source_url, register_url, url
+      -- stable identifiers
+      record_id AS register_entry_id,
+      person_id, member_id,
+      date AS received_date,
+      category_id,
+
+      -- JSON fields pulled out of items.item
+      json_extract(item,'$.value_from') AS value_from,
+      json_extract(item,'$.value')      AS value,
+      json_extract(item,'$.description') AS description,
+      json_extract(item,'$.nature')     AS nature,
+      json_extract(item,'$.link')       AS link
+
     FROM ${TABLE}
     ${whereSQL}
-    ORDER BY date(received) DESC NULLS LAST, date(received_date) DESC NULLS LAST, date(registered) DESC NULLS LAST
-    LIMIT :limit
-    OFFSET :offset
+    ORDER BY date(received_date) DESC
+    LIMIT :limit OFFSET :offset
   `;
 }
+
 
 export default async function handler(req) {
   try {
