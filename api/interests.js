@@ -85,28 +85,40 @@ export default async function handler(req) {
   try {
     const { searchParams } = new URL(req.url);
 
-    const start = searchParams.get('start');
-    const end = searchParams.get('end');
-    const payer = searchParams.get('payer');
-    const category = searchParams.get('category');
-    const minAmount = searchParams.get('minAmount');
-    const maxAmount = searchParams.get('maxAmount');
+    // New + legacy param names (so old UI keeps working)
+const start = searchParams.get('start');
+const end = searchParams.get('end');
+const payer = searchParams.get('payer');
+const category = searchParams.get('category');
+const minAmount = searchParams.get('minAmount');
+const maxAmount = searchParams.get('maxAmount');
 
-    const limit = Math.min(parseInt(searchParams.get('limit') || '100', 10), 500);
-    const offset = parseInt(searchParams.get('offset') || '0', 10);
+// Legacy person/member filters used by your old UI
+const personId = searchParams.get('PersonId') || searchParams.get('personId');
+const memberId = searchParams.get('MemberId') || searchParams.get('memberId') || searchParams.get('mpId');
+
+// Pagination: accept legacy Take/Skip too
+const limitRaw = searchParams.get('limit') ?? searchParams.get('Take') ?? '100';
+const offsetRaw = searchParams.get('offset') ?? searchParams.get('Skip') ?? '0';
+const limit = Math.min(parseInt(limitRaw, 10) || 100, 500);
+const offset = parseInt(offsetRaw, 10) || 0;
+
 
     const sql = buildSQL({ start, end, payer, category, minAmount, maxAmount });
 
     const params = {
-      start,
-      end,
-      payer: payer ? `%${payer}%` : undefined,
-      category,
-      minAmount: minAmount ? Number(minAmount) : undefined,
-      maxAmount: maxAmount ? Number(maxAmount) : undefined,
-      limit,
-      offset,
-    };
+  start,
+  end,
+  payer: payer ? `%${payer}%` : undefined,
+  category,
+  minAmount: minAmount ? Number(minAmount) : undefined,
+  maxAmount: maxAmount ? Number(maxAmount) : undefined,
+  personId,
+  memberId,
+  limit,
+  offset,
+};
+
 
     const BASE_URL = process.env.DATASETTE_BASE_URL;
     const DB = process.env.DATASETTE_DB || 'parlparse';
