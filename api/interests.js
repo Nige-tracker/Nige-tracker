@@ -14,17 +14,14 @@ const iso = (d) => (d && /^\d{4}-\d{2}-\d{2}$/.test(d) ? `${d}T00:00:00Z` : (d |
 // --- map a wide variety of ParlParse column names into one stable shape ---
 function mapRow(r) {
   const payer =
-    r.payer ??
     r.value_from ??
+    r.payer ??
     r.donor ??
     r.source ??
     r.organisation ??
-    r.organization ??
     r.company ??
     r.employer ??
     r.from ??
-    r.provider ??
-    r.sponsor ??
     null;
 
   const amountLabel =
