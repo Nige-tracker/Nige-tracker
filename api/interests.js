@@ -105,4 +105,91 @@ export default async function handler(req) {
 
     // Person/member filters (support new and legacy)
     const personId = searchParams.get('personId') || searchParams.get('PersonId');
-    const mem
+    const memberId =
+      searchParams.get('memberId') ||
+      searchParams.get('MemberId') ||
+      searchParams.get('mpId');
+
+    // Pagination: accept new and legacy names
+    const limitRaw = searchParams.get('limit') ?? searchParams.get('Take') ?? '100';
+    const offsetRaw = searchParams.get('offset') ?? searchParams.get('Skip') ?? '0';
+    const limit = Math.min(parseInt(limitRaw, 10) || 100, 500);
+    const offset = parseInt(offsetRaw, 10) || 0;
+
+    // Build SQL + params for Datasette
+    const sql = buildSQL({ start, end, payer, category, minAmount, maxAmount, personId, memberId });
+
+    const params = {
+      start,
+      end,
+      payer: payer ? `%${payer}%` : undefined,
+      category,
+      minAmount: minAmount ? Number(minAmount) : undefined,
+      maxAmount: maxAmount ? Number(maxAmount) : undefined,
+      personId,
+      memberId,
+      limit,
+      offset,
+    };
+
+    // Datasette endpoint
+    const BASE_URL = process.env.DATASETTE_BASE_URL; // e.g. 'https://parlparse.yourhost.com'
+    const DB = process.env.DATASETTE_DB || 'parlparse'; // e.g. 'parlparse'
+    if (!BASE_URL) {
+      return new Response(JSON.stringify({ error: 'Missing DATASETTE_BASE_URL env var' }), { status: 500 });
+    }
+
+    const dsURL = new URL(`${BASE_URL}/${DB}.json`);
+    dsURL.searchParams.set('sql', sql);
+    Object.entries(params).forEach(([k, v]) => {
+      if (v !== undefined && v !== null && v !== '') dsURL.searchParams.set(`_params.${k}`, String(v));
+    });
+    dsURL.searchParams.set('_shape', 'objects');
+
+    const headers = {};
+    if (process.env.DATASETTE_TOKEN) headers.Authorization = `Bearer ${process.env.DATASETTE_TOKEN}`;
+
+    const res = await fetch(dsURL.toString(), {
+      headers,
+      next: { revalidate: 60 }, // cache hint on Vercel Edge
+    });
+
+    if (!res.ok) {
+      const detail = await res.text();
+      return new Response(JSON.stringify({ error: 'Datasette error', status: res.status, detail }), { status: 502 });
+    }
+
+    const data = await res.json();
+    const rows = Array.isArray(data) ? data : data.rows || data;
+
+    // Dedupe by register_entry_id when available; otherwise use a composite key
+    const seen = new Set();
+    const mapped = [];
+    for (const r of rows) {
+      const m = mapRow(r);
+      const key = m.id || JSON.stringify([m.personId, m.payer, m.receivedDate, m.amount]);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      mapped.push(m);
+    }
+
+    const hasMore = rows.length === limit;
+
+    return new Response(
+      JSON.stringify({
+        results: mapped,
+        page: { limit, offset, nextOffset: hasMore ? offset + limit : null },
+        filters: { start, end, payer, category, minAmount: minAmount ?? null, maxAmount: maxAmount ?? null, personId: personId ?? null, memberId: memberId ?? null },
+      }),
+      {
+        status: 200,
+        headers: {
+          'content-type': 'application/json; charset=utf-8',
+          'cache-control': 'public, s-maxage=60, stale-while-revalidate=300',
+        },
+      }
+    );
+  } catch (err) {
+    return new Response(JSON.stringify({ error: err.message || String(err) }), { status: 500 });
+  }
+}
