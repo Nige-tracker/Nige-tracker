@@ -14,7 +14,6 @@ export const escapeHtml = (s = "") =>
 
 // --- money + date helpers ---
 export function parseAllGBP(text = "") {
-  // capture ALL tokens like £26,817.60, £500, £1,200
   const out = [];
   const rx = /£\s*([0-9][0-9,]*)(?:\.(\d{2}))?/g;
   let m;
@@ -41,18 +40,16 @@ export function monthKey(dateStr) {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`; // YYYY-MM
 }
 
-// --- robust payer/source extractor (covers register prose) ---
+// --- payer/source extraction ---
 export function extractSource(raw = "") {
   if (!raw) return "";
-
-  // Normalise whitespace and strip basic HTML tags
   let t = String(raw)
     .replace(/<br\s*\/?>/gi, "\n")
     .replace(/<\/?[^>]+>/g, " ")
     .replace(/\s+/g, " ")
     .trim();
 
-  // 1) Prefer explicit labels first (incl. plural variants)
+  // 1) Explicit labels (most reliable)
   const patterns = [
     /\bname of donors?\s*:\s*([^.;\n]+?)(?:[,.;](?:\s|$)|$)/i,
     /\bname of (?:the\s*)?donor\s*:\s*([^.;\n]+?)(?:[,.;](?:\s|$)|$)/i,
@@ -60,11 +57,10 @@ export function extractSource(raw = "") {
     /\bname of (?:the\s*)?company\s*:\s*([^.;\n]+?)(?:[,.;](?:\s|$)|$)/i,
     /\bcompany making (?:the )?payment\s*:\s*([^.;\n]+?)(?:[,.;](?:\s|$)|$)/i,
     /\bcompany providing (?:the )?benefit\s*:\s*([^.;\n]+?)(?:[,.;](?:\s|$)|$)/i,
-    /\bemployer\s*:\s*([^.;\n]+?)(?:[,.;](?:\s|$)|$)/i,
     /\bname of employer\s*:\s*([^.;\n]+?)(?:[,.;](?:\s|$)|$)/i,
+    /\bemployer\s*:\s*([^.;\n]+?)(?:[,.;](?:\s|$)|$)/i,
     /\bsponsor\s*:\s*([^.;\n]+?)(?:[,.;](?:\s|$)|$)/i,
     /\bdonor\s*:\s*([^.;\n]+?)(?:[,.;](?:\s|$)|$)/i,
-    // Some entries literally start lines like "From GB News Limited, …" or "By XYZ Ltd, …"
     /^\s*from\s+([^,.;\n]+?)(?:[,.;](?:\s|$)|$)/i,
     /^\s*by\s+([^,.;\n]+?)(?:[,.;](?:\s|$)|$)/i,
   ];
@@ -73,25 +69,51 @@ export function extractSource(raw = "") {
     if (m && m[1]) return cleanName(m[1]);
   }
 
-  // 2) If a line begins with "From <org>," later in the paragraph
+  // 2) If present anywhere: "from X,"
   {
     const m = /\bfrom\s+([^,.;\n]+?)(?:[,.;](?:\s|$)|$)/i.exec(t);
     if (m && m[1]) return cleanName(m[1]);
   }
 
-  // 3) Fallback: first clause that looks like an org/person (Ltd, LLP, PLC etc.)
-  const clause = t.split(/[-–—]|,|;/)[0]?.trim() || "";
-  if (/\b(ltd|llp|plc|limited|foundation|university|trust|cic|inc\.?|gmbh|s\.?a\.?s?\.?)\b/i.test(clause)) {
-    return cleanName(clause);
+  // 3) Phrase immediately before "payment received" often names payer (e.g., "GB News Limited - Payment received …")
+  {
+    const m = /([A-Z][^.\n]{2,100}?)\s*[-–—,:]?\s*(?:payment\s+(?:of\s+)?received|date\s+received|received\s+on)\b/i.exec(t);
+    if (m && m[1]) {
+      const guess = cleanName(m[1]);
+      if (isOrgLike(guess)) return guess;
+    }
   }
+
+  // 4) Fallback: any org-like token anywhere in the text
+  const fallback = findOrgLike(t);
+  if (fallback) return fallback;
 
   return "";
 }
 
 function cleanName(s) {
   return String(s)
-    .replace(/\s*\(.*?\)\s*$/g, "") // drop trailing (…)
+    .replace(/\s*\(.*?\)\s*$/g, "")
     .replace(/\s*-\s*$/g, "")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+function isOrgLike(s) {
+  return /\b(ltd|limited|llp|plc|group|holdings?|media|broadcast(ing)?|company|foundation|university|trust|cic|inc\.?|corp\.?|gmbh|s\.?a\.?s?\.?)\b/i.test(s);
+}
+
+// Scan for an org-like name anywhere in a sentence.
+export function findOrgLike(text = "") {
+  const rx = /\b([A-Z][A-Za-z0-9&().'’\- ]{2,80}?\s(?:Ltd|Limited|LLP|PLC|Group|Holdings?|Media|Broadcast(?:ing)?|Company|Foundation|University|Trust|CIC|Inc\.?|Corp\.?|GmbH|S\.?A\.?S?\.?))\b/gi;
+  let m;
+  const seen = new Set();
+  while ((m = rx.exec(text)) !== null) {
+    const name = cleanName(m[1]);
+    if (name && !seen.has(name)) {
+      seen.add(name);
+      return name; // first reasonable hit
+    }
+  }
+  return "";
 }
