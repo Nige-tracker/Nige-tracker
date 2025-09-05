@@ -103,9 +103,10 @@ class NigelTracker {
 
     async loadDebatesData() {
         try {
-            const response = await fetch(`${TWFY_API_BASE}/getDebates?key=${API_KEY}&person=${NIGEL_FARAGE_ID}&output=json&num=10`);
-            if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
-            const data = await response.json();
+            const data = await callTWFYAPI('getDebates', { 
+                person: NIGEL_FARAGE_ID, 
+                num: 10 
+            });
             this.debatesData = data.rows || [];
         } catch (error) {
             console.error('Error loading debates data:', error);
