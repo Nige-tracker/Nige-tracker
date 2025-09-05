@@ -1,5 +1,6 @@
 // /api/interests.js
-export const config = { runtime: 'edge' };
+// Node.js Serverless version (NOT Edge) to avoid opaque Edge "internal error"
+export const config = { runtime: 'nodejs18.x' }; // or 'nodejs20.x' if enabled
 
 // ---------- helpers ----------
 function parseNumber(n) {
@@ -48,7 +49,7 @@ function buildSQL({ start, end, payer, category, minAmount, maxAmount, personId,
 
   const whereSQL = where.length ? `WHERE ${where.join(' AND ')}` : '';
 
-  // TODO: If your Datasette uses a different table/view, change `register_interests` below.
+  // IMPORTANT: Change `register_interests` if your Datasette uses a different table/view.
   return `
     SELECT
       register_entry_id,
@@ -88,14 +89,18 @@ function buildSQL({ start, end, payer, category, minAmount, maxAmount, personId,
   `;
 }
 
-// ---------- handler ----------
-export default async function handler(req) {
-  const url = new URL(req.url);
-  const diag = url.searchParams.get('diag') === '1';
+// ---------- handler (Node.js style) ----------
+export default async function handler(req, res) {
+  // Support both Next/Vercel req.url and absolute construction
+  const fullUrl =
+    typeof req.url === 'string' && req.url.startsWith('http')
+      ? req.url
+      : `https://dummy${req.url || ''}`; // prefix to satisfy URL() when path-only
+  const url = new URL(fullUrl);
+  const searchParams = url.searchParams;
+  const diag = searchParams.get('diag') === '1';
 
   try {
-    const { searchParams } = url;
-
     // New param names
     const start = searchParams.get('start');
     const end = searchParams.get('end');
@@ -104,36 +109,30 @@ export default async function handler(req) {
     const minAmount = searchParams.get('minAmount');
     const maxAmount = searchParams.get('maxAmount');
 
-    // Person/member filters (support new and legacy)
+    // Person/member filters (new + legacy)
     const personId = searchParams.get('personId') || searchParams.get('PersonId');
     const memberId =
       searchParams.get('memberId') ||
       searchParams.get('MemberId') ||
       searchParams.get('mpId');
 
-    // Pagination: accept new and legacy names
+    // Pagination (new + legacy)
     const limitRaw = searchParams.get('limit') ?? searchParams.get('Take') ?? '100';
     const offsetRaw = searchParams.get('offset') ?? searchParams.get('Skip') ?? '0';
     const limit = Math.min(parseInt(limitRaw, 10) || 100, 500);
     const offset = parseInt(offsetRaw, 10) || 0;
 
-    // Datasette endpoint
-    const BASE_URL = process.env.DATASETTE_BASE_URL;
+    const BASE_URL = process.env.DATASETTE_BASE_URL; // e.g. https://parlparse.example.com
     const DB = process.env.DATASETTE_DB || 'parlparse';
 
-    // Early diagnostics
     if (!BASE_URL) {
-      return new Response(
-        JSON.stringify({
-          error: 'Missing DATASETTE_BASE_URL env var',
-          hint: 'Set this in Vercel → Project → Settings → Environment Variables',
-          diag: { haveBaseUrl: !!BASE_URL, db: DB },
-        }),
-        { status: 500, headers: { 'content-type': 'application/json' } }
-      );
+      return res.status(500).json({
+        error: 'Missing DATASETTE_BASE_URL env var',
+        hint: 'Set this in Vercel → Project → Settings → Environment Variables',
+        diag: diag ? { haveBaseUrl: !!BASE_URL, db: DB } : undefined,
+      });
     }
 
-    // Build SQL + params
     const sql = buildSQL({ start, end, payer, category, minAmount, maxAmount, personId, memberId });
     const params = {
       start,
@@ -158,21 +157,18 @@ export default async function handler(req) {
     const headers = {};
     if (process.env.DATASETTE_TOKEN) headers.Authorization = `Bearer ${process.env.DATASETTE_TOKEN}`;
 
-    // Optional: show constructed URL in diagnostics (WITHOUT secrets)
     const constructedUrl = dsURL.toString();
 
-    const upstream = await fetch(constructedUrl, { headers, next: { revalidate: 60 } });
+    const upstream = await fetch(constructedUrl, { headers });
 
     if (!upstream.ok) {
       const bodyText = await upstream.text();
-      const snippet = bodyText.slice(0, 500);
-      const payload = {
+      return res.status(502).json({
         error: 'Datasette error',
         status: upstream.status,
-        detailSnippet: snippet,
+        detailSnippet: bodyText.slice(0, 500),
         ...(diag ? { constructedUrl } : {}),
-      };
-      return new Response(JSON.stringify(payload), { status: 502, headers: { 'content-type': 'application/json' } });
+      });
     }
 
     const data = await upstream.json();
@@ -190,7 +186,7 @@ export default async function handler(req) {
 
     const hasMore = rows.length === limit;
 
-    const out = {
+    const payload = {
       results: mapped,
       page: { limit, offset, nextOffset: hasMore ? offset + limit : null },
       filters: {
@@ -198,27 +194,23 @@ export default async function handler(req) {
         minAmount: minAmount ?? null, maxAmount: maxAmount ?? null,
         personId: personId ?? null, memberId: memberId ?? null
       },
+      ...(diag ? {
+        diag: {
+          haveBaseUrl: !!BASE_URL,
+          db: DB,
+          constructedUrl,
+          upstreamCount: Array.isArray(rows) ? rows.length : (rows?.length ?? null),
+        }
+      } : {})
     };
 
-    if (diag) {
-      out.diag = {
-        haveBaseUrl: !!BASE_URL,
-        db: DB,
-        constructedUrl,
-        upstreamCount: Array.isArray(rows) ? rows.length : (rows?.length ?? null),
-      };
-    }
-
-    return new Response(JSON.stringify(out), {
-      status: 200,
-      headers: {
-        'content-type': 'application/json; charset=utf-8',
-        'cache-control': 'public, s-maxage=60, stale-while-revalidate=300',
-      },
-    });
+    // Cache headers (ok on Node)
+    res.setHeader('cache-control', 'public, s-maxage=60, stale-while-revalidate=300');
+    return res.status(200).json(payload);
   } catch (err) {
-    const payload = { error: err.message || String(err) };
-    if (diag) payload.stack = (err && err.stack) || null;
-    return new Response(JSON.stringify(payload), { status: 500, headers: { 'content-type': 'application/json' } });
+    return res.status(500).json({
+      error: err?.message || String(err),
+      ...(diag ? { stack: err?.stack || null } : {}),
+    });
   }
 }
