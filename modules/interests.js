@@ -11,7 +11,7 @@ import {
 } from "./util.js";
 
 // Turn on to see which line produced the source match
-const DEBUG = false;
+const DEBUG = true;
 
 export async function renderInterests(root, memberId) {
   root.innerHTML = `<div class="empty">Loading register entries…</div>`;
