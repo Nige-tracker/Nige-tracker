@@ -6,23 +6,82 @@ import {
   parseAllGBP,
   inLastDays,
   monthKey,
-  // Use whichever extractor you currently have:
-  extractSourcePlus as _extractSourcePlus, // if present
-  extractSource as _extractSource,        // else this will be defined
   normalizeNameKey
 } from "./util.js";
 
-// Pick whichever extractor exists
-const extractSourcePlus = typeof _extractSourcePlus === "function"
-  ? _extractSourcePlus
-  : (t) => ({ source: (typeof _extractSource === "function" ? _extractSource(t) : ""), why: "", matchedText: "" });
+/* -------- PAYER EXTRACTION (self-contained, no imports) -------- */
+function extractSourcePlus(raw = "") {
+  // Returns { source, why, matchedText }
+  let source = "", why = "", matchedText = "";
 
-const DEBUG = false; // set true to print grouping keys under cards
+  if (!raw) return { source, why, matchedText };
+
+  const t = String(raw)
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<\/?[^>]+>/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  // 1) Labelled fields (most reliable)
+  const labelled = [
+    ["name of donor", /\bname of donors?\s*:\s*([^.;\n]+?)(?:[,.;](?:\s|$)|$)/i],
+    ["name of donor (alt)", /\bname of (?:the\s*)?donor\s*:\s*([^.;\n]+?)(?:[,.;](?:\s|$)|$)/i],
+    ["name of company", /\bname of (?:the\s*)?compan(?:y|ies)\s*:\s*([^.;\n]+?)(?:[,.;](?:\s|$)|$)/i],
+    ["name of employer", /\bname of (?:the\s*)?employer\s*:\s*([^.;\n]+?)(?:[,.;](?:\s|$)|$)/i],
+    ["employer", /\bemployer\s*:\s*([^.;\n]+?)(?:[,.;](?:\s|$)|$)/i],
+    ["company making payment", /\bcompany making (?:the )?payment\s*:\s*([^.;\n]+?)(?:[,.;](?:\s|$)|$)/i],
+    ["company providing benefit", /\bcompany providing (?:the )?benefit\s*:\s*([^.;\n]+?)(?:[,.;](?:\s|$)|$)/i],
+    ["name of organisation", /\bname of organis(?:ation|ation\(s\))\s*:\s*([^.;\n]+?)(?:[,.;](?:\s|$)|$)/i],
+    ["paying organisation", /\bpaying organis(?:ation|ation\(s\))\s*:\s*([^.;\n]+?)(?:[,.;](?:\s|$)|$)/i],
+    ["broadcaster", /\bname of broadcaster\s*:\s*([^.;\n]+?)(?:[,.;](?:\s|$)|$)/i],
+    ["sponsor", /\bsponsor\s*:\s*([^.;\n]+?)(?:[,.;](?:\s|$)|$)/i],
+    ["donor", /\bdonor\s*:\s*([^.;\n]+?)(?:[,.;](?:\s|$)|$)/i]
+  ];
+  for (const [label, rx] of labelled) {
+    const m = rx.exec(t);
+    if (m && m[1]) return { source: cleanName(m[1]), why: `label:${label}`, matchedText: m[0] };
+  }
+
+  // 2) Line-start cues: "From X," / "By X,"
+  let m = /^\s*from\s+([^,.;\n]+?)(?:[,.;](?:\s|$)|$)/i.exec(t);
+  if (m && m[1]) return { source: cleanName(m[1]), why: "line-start:from", matchedText: m[0] };
+  m = /^\s*by\s+([^,.;\n]+?)(?:[,.;](?:\s|$)|$)/i.exec(t);
+  if (m && m[1]) return { source: cleanName(m[1]), why: "line-start:by", matchedText: m[0] };
+
+  // 3) Anywhere in text: "from X,"
+  m = /\bfrom\s+([^,.;\n]+?)(?:[,.;](?:\s|$)|$)/i.exec(t);
+  if (m && m[1]) return { source: cleanName(m[1]), why: "inline:from", matchedText: m[0] };
+
+  // 4) Immediately before "payment received / received on / date received"
+  m = /([A-Z][^.\n]{2,100}?)\s*[-–—,:]?\s*(?:payment\s+(?:of\s+)?received|date\s+received|received\s+on)\b/i.exec(t);
+  if (m && m[1]) {
+    const guess = cleanName(m[1]);
+    if (isOrgLike(guess)) return { source: guess, why: "before:payment-received", matchedText: m[0] };
+  }
+
+  // 5) Fallback: org-like token anywhere
+  const rxOrg = /\b([A-Z][A-Za-z0-9&().'’\- ]{2,80}?\s(?:Ltd|Limited|LLP|PLC|Group|Holdings?|Media|Broadcast(?:ing)?|Company|Foundation|University|Trust|CIC|Inc\.?|Corp\.?|GmbH|S\.?A\.?S?\.?))\b/gi;
+  m = rxOrg.exec(t);
+  if (m && m[1]) return { source: cleanName(m[1]), why: "org-like", matchedText: m[0] };
+
+  return { source, why, matchedText };
+}
+
+function cleanName(s) {
+  return String(s).replace(/\s*\(.*?\)\s*$/g, "").replace(/\s*-\s*$/g, "").replace(/\s+/g, " ").trim();
+}
+function isOrgLike(s) {
+  return /\b(ltd|limited|llp|plc|group|holdings?|media|broadcast(ing)?|company|foundation|university|trust|cic|inc\.?|corp\.?|gmbh|s\.?a\.?s?\.?)\b/i.test(s);
+}
+
+/* ----------------------- UI / RENDERING ----------------------- */
+
+const DEBUG = false; // set true to print a debug line under cards
 
 export async function renderInterests(root, memberId) {
   root.innerHTML = `<div class="empty">Loading register entries…</div>`;
 
-  // Simple tab UI inside the Interests panel
+  // Tabs
   const tabs = el(`
     <div class="card">
       <div class="row" style="gap:.5rem; flex-wrap:wrap">
@@ -32,6 +91,7 @@ export async function renderInterests(root, memberId) {
     </div>
   `);
 
+  // Header (total + mini chart)
   const header = el(`
     <div class="card" style="display:flex;gap:1rem;align-items:center;flex-wrap:wrap;">
       <div>
@@ -45,7 +105,7 @@ export async function renderInterests(root, memberId) {
   const content = el(`<div></div>`);
 
   try {
-    // Fetch via your same-origin Vercel proxy
+    // Fetch (same-origin Vercel proxy)
     const url = new URL(`/api/interests`, window.location.origin);
     url.searchParams.set("MemberId", String(memberId));
     url.searchParams.set("Take", "100");
@@ -65,11 +125,9 @@ export async function renderInterests(root, memberId) {
       return;
     }
 
-    // ---- Normalize each entry: when, payer source, amounts (from main + children) ----
+    // ---- Normalize entries: when, source, amounts, category ----
     const normalized = [];
-
     for (const it of items) {
-      // best-effort timestamp
       const when =
         it?.registrationDate ||
         it?.publishedDate ||
@@ -77,10 +135,10 @@ export async function renderInterests(root, memberId) {
         it?.registeredInterestCreated ||
         null;
 
-      // narrative text (payer/amounts usually live here)
+      const category = it?.category?.name || it?.categoryName || it?.category || "";
+
       const mainText = it?.summary || it?.description || it?.registeredInterest || "";
 
-      // gather candidates (children often hold “Payment received…” lines)
       const candidateTexts = [mainText];
       const children = Array.isArray(it?.childInterests || it?.children) ? (it.childInterests || it.children) : [];
       for (const c of children) {
@@ -88,43 +146,29 @@ export async function renderInterests(root, memberId) {
         if (cText) candidateTexts.push(cText);
       }
 
-      // 1) payer/source: try debug extractor if available, else simple extract
-      let source = "";
-      let srcWhy = "";
+      // Source: first hit across candidates
+      let src = "", why = "", matched = "";
       for (const ct of candidateTexts) {
-        const { source: s, why } = extractSourcePlus(ct);
-        if (s) { source = s; srcWhy = why; break; }
+        const r = extractSourcePlus(ct);
+        if (r.source) { src = r.source; why = r.why; matched = r.matchedText || ct.slice(0, 180); break; }
       }
-      // 2) amounts: collect all £ tokens; card shows the largest
+
+      // Amounts: largest £ token across candidates
       let amounts = [];
       for (const ct of candidateTexts) amounts = amounts.concat(parseAllGBP(ct));
       const amount = amounts.length ? Math.max(...amounts) : null;
 
-      // 3) category if present (for display)
-      const category = it?.category?.name || it?.categoryName || it?.category || "";
-
-      // 4) try to detect a stable payer ID if the API exposes one (field names vary)
-      const payerId =
-        it?.donor?.id ||
-        it?.sponsor?.id ||
-        it?.employer?.id ||
-        it?.company?.id ||
-        it?.organisation?.id ||
-        it?.organization?.id ||
-        it?.payer?.id ||
-        null;
-
-      // 5) computed grouping key: prefer explicit id; else normalized name
-      const key = payerId ? `id:${payerId}` : (source ? `name:${normalizeNameKey(source)}` : "");
+      // Grouping key (prefer name since ID is rarely exposed)
+      const key = src ? `name:${normalizeNameKey(src)}` : "unknown";
 
       normalized.push({
-        when, source, amount, category, key,
+        when, category, source: src, amount, key,
         _raw: it,
-        _srcWhy: srcWhy
+        _dbg: { why, matched }
       });
     }
 
-    // ---- Compute totals + monthly chart from normalized entries ----
+    // ---- Totals + monthly chart (last 12 months) ----
     const paymentsLastYear = normalized.filter(n =>
       typeof n.amount === "number" && !isNaN(n.amount) && inLastDays(n.when, 365)
     );
@@ -142,16 +186,14 @@ export async function renderInterests(root, memberId) {
       if (byMonth[k] != null) byMonth[k] += n.amount;
     }
 
-    // ---- Build grouped map (payer -> entries) ----
+    // ---- Group by payer ----
     const groups = new Map();
     for (const n of normalized) {
-      // If neither id nor name available, skip grouping and drop to a “(unknown payer)” bucket
-      const gKey = n.key || (n.source ? `name:${normalizeNameKey(n.source)}` : "unknown");
-      if (!groups.has(gKey)) groups.set(gKey, { source: n.source || "Unknown payer", entries: [], total: 0 });
+      const gKey = n.key;
+      if (!groups.has(gKey)) groups.set(gKey, { source: n.source || "Unknown payer", entries: [], total: 0, key: gKey });
       const g = groups.get(gKey);
       g.entries.push(n);
       if (typeof n.amount === "number" && !isNaN(n.amount)) g.total += n.amount;
-      // prefer a non-empty display name if one appears later
       if (!g.source && n.source) g.source = n.source;
     }
 
@@ -161,7 +203,7 @@ export async function renderInterests(root, memberId) {
     document.getElementById("int-total").textContent =
       "£" + total.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
-    // Draw chart (same as before)
+    // Draw chart
     try {
       const canvas = document.getElementById("int-chart");
       const ctx = canvas.getContext("2d");
@@ -195,21 +237,20 @@ export async function renderInterests(root, memberId) {
 
     function renderGrouped() {
       const frag = document.createDocumentFragment();
-
-      // sort groups by total desc
       const list = Array.from(groups.values()).sort((a, b) => b.total - a.total);
 
       list.forEach(g => {
-        // entries newest first
         g.entries.sort((a, b) => new Date(b.when || 0) - new Date(a.when || 0));
         const totalStr = "£" + g.total.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
         const itemsHtml = g.entries.map(en => {
+          const meta = [fmtDate(en.when), en.category].filter(Boolean).join(" • ");
           const amountStr = (typeof en.amount === "number" && !isNaN(en.amount))
             ? "£" + en.amount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
             : "£—";
-          const meta = [fmtDate(en.when), en.category].filter(Boolean).join(" • ");
-          const dbg = DEBUG ? `<div class="meta" style="opacity:.7">key: ${escapeHtml(en.key || "")} • why: ${escapeHtml(en._srcWhy || "")}</div>` : "";
+          const dbg = DEBUG
+            ? `<div class="meta" style="opacity:.7">why: ${escapeHtml(en._dbg.why || "none")} • matched: “${escapeHtml((en._dbg.matched || "").toString())}”</div>`
+            : "";
           return `
             <li>
               <div class="meta">${escapeHtml(meta)}</div>
@@ -244,7 +285,9 @@ export async function renderInterests(root, memberId) {
         const amountStr = (typeof n.amount === "number" && !isNaN(n.amount))
           ? "£" + n.amount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
           : "£—";
-        const dbg = DEBUG ? `<div class="meta" style="opacity:.7">key: ${escapeHtml(n.key || "")} • why: ${escapeHtml(n._srcWhy || "")}</div>` : "";
+        const dbg = DEBUG
+          ? `<div class="meta" style="opacity:.7">why: ${escapeHtml(n._dbg.why || "none")} • matched: “${escapeHtml((n._dbg.matched || "").toString())}”</div>`
+          : "";
         const card = el(`
           <article class="card">
             <div class="meta">${escapeHtml(meta)}</div>
