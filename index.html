@@ -1,32 +1,67 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="utf-8" />
-  <title>Nige Tracker — Votes & Interests</title>
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <link rel="icon" href="data:;base64,iVBORw0KGgo=" />
-  <link rel="stylesheet" href="./styles.css" />
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Nigel Farage Tracker</title>
+    <link rel="stylesheet" href="style.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/3.9.1/chart.min.js"></script>
 </head>
 <body>
-  <header class="wrap">
-    <h1>Nigel Farage — Activity</h1>
-    <p class="muted">Member ID: <code id="memberId">5091</code></p>
-    <nav class="tabs">
-      <button data-tab="votes" class="active">Voting record</button>
-      <button data-tab="interests">Register of interests</button>
-    </nav>
-  </header>
+    <div class="container">
+        <header>
+            <h1>🏛️ Nigel Farage Tracker</h1>
+            <p>Parliamentary Activity & Interests Monitor</p>
+        </header>
 
-  <main class="wrap">
-    <section id="votes" class="panel"></section>
-    <section id="interests" class="panel hidden"></section>
-  </main>
+        <div class="loading" id="loading">
+            <p>Loading data from TheyWorkForYou API...</p>
+        </div>
 
-  <footer class="wrap small muted">
-    Data © UK Parliament (Open Parliament Licence). Unofficial viewer.
-  </footer>
+        <div class="content" id="content" style="display: none;">
+            <!-- MP Basic Info -->
+            <section class="mp-info">
+                <h2>Member Information</h2>
+                <div id="mp-details">
+                    <!-- Will be populated by JavaScript -->
+                </div>
+            </section>
 
-  <!-- Main bootstrapping script -->
-  <script type="module" src="./main.js"></script>
+            <!-- Register of Interests -->
+            <section class="interests">
+                <h2>Register of Interests</h2>
+                <div id="interests-container">
+                    <!-- Will be populated by JavaScript -->
+                </div>
+            </section>
+
+            <!-- Activity Chart -->
+            <section class="activity">
+                <h2>Recent Activity</h2>
+                <canvas id="activityChart" width="400" height="200"></canvas>
+            </section>
+
+            <!-- Recent Debates -->
+            <section class="debates">
+                <h2>Recent Debates & Speeches</h2>
+                <div id="debates-container">
+                    <!-- Will be populated by JavaScript -->
+                </div>
+            </section>
+        </div>
+
+        <div class="error" id="error" style="display: none;">
+            <h3>⚠️ Error Loading Data</h3>
+            <p id="error-message"></p>
+            <button onclick="location.reload()">Try Again</button>
+        </div>
+
+        <footer>
+            <p>Data source: <a href="https://www.theyworkforyou.com" target="_blank">TheyWorkForYou</a></p>
+            <p>This site is not affiliated with any political party</p>
+        </footer>
+    </div>
+
+    <script src="script.js"></script>
 </body>
 </html>
