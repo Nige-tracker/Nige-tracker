@@ -32,22 +32,25 @@ function mapRow(r) {
   };
 }
 
-function buildSQL({ start, end, payer, category, minAmount, maxAmount }) {
+function buildSQL({ start, end, payer, category, minAmount, maxAmount, personId, memberId }) {
   const where = [];
   if (start) where.push('date(received_date) >= date(:start)');
   if (end) where.push('date(received_date) <= date(:end)');
   if (payer) where.push('(payer LIKE :payer OR donor LIKE :payer)');
   if (category) where.push('(category = :category OR category_name = :category)');
+  if (personId) where.push('(person_id = :personId)');
+  if (memberId) where.push('(member_id = :memberId OR mp_id = :memberId)'); // tolerate different column names
   if (minAmount) where.push('CAST(REPLACE(REPLACE(IFNULL(amount, value), ",", ""), "£", "") AS REAL) >= :minAmount');
   if (maxAmount) where.push('CAST(REPLACE(REPLACE(IFNULL(amount, value), ",", ""), "£", "") AS REAL) <= :maxAmount');
 
   const whereSQL = where.length ? `WHERE ${where.join(' AND ')}` : '';
-  // IMPORTANT: if your Datasette table/view name differs, change `register_interests` here.
+
   return `
     SELECT
       register_entry_id,
       person_id,
       member_id,
+      mp_id,
       member_name,
       constituency,
       category,
