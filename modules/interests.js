@@ -29,7 +29,7 @@ export async function renderInterests(root, memberId) {
     // Build URL to your Vercel function
     const url = new URL(`/api/interests`, window.location.origin);
     url.searchParams.set("MemberId", String(memberId));
-    url.searchParams.set("Take", "100"); // big enough page; we sort client-side
+    url.searchParams.set("Take", "100"); // we sort client-side
 
     const res = await fetch(url.toString(), { headers: { Accept: "application/json" } });
     if (!res.ok) {
@@ -80,19 +80,19 @@ export async function renderInterests(root, memberId) {
         amounts = amounts.concat(parseAllGBP(cText)); // collect child £ tokens
       }
 
-      // 3) Fallback heuristic for source if still blank
+      // 3) Fallback: first chunk heuristic if still blank
       if (!source) {
         const firstChunk = (text || "").split(/\n+/)[0]?.split(/[-–—]|,|;/)[0]?.trim() || "";
         if (firstChunk && firstChunk.length > 3) source = firstChunk;
       }
 
-      // Single representative amount for the card = largest £ token found
+      // representative amount = largest £ token found
       const amount = amounts.length ? Math.max(...amounts) : null;
 
-      // Clean body: drop bare "Payment received" lines (since we show amount separately)
+      // Clean body: drop "Payment received..." / "Date received..." / "Date paid..." lines (any leading whitespace/bullets)
       const visibleText = (text || "")
         .split(/\n+/)
-        .filter(line => !/^payment received/i.test(line.trim()))
+        .filter(line => !/^\s*(•|\*|-)?\s*(payment\s+(?:of\s+)?received|date\s+received|date\s+paid|received\s+on)\b/i.test(line))
         .join("\n")
         .trim();
 
@@ -122,7 +122,8 @@ export async function renderInterests(root, memberId) {
     // --- Render header (plain total + simple bars) ---
     root.innerHTML = "";
     root.appendChild(header);
-    document.getElementById("int-total").textContent = "£" + Math.round(total).toLocaleString();
+    document.getElementById("int-total").textContent =
+      "£" + total.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
     try {
       const canvas = document.getElementById("int-chart");
@@ -168,7 +169,7 @@ export async function renderInterests(root, memberId) {
         const src = n.source ? escapeHtml(n.source) : "Source not specified";
         const amountStr =
           (typeof n.amount === "number" && !isNaN(n.amount))
-            ? "£" + n.amount.toLocaleString(undefined, { maximumFractionDigits: 2 })
+            ? "£" + n.amount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
             : "£—";
         const body = n.text ? `<div>${escapeHtml(n.text)}</div>` : "";
 
