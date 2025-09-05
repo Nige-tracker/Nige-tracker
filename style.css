@@ -82,12 +82,37 @@ section h2 {
     align-items: start;
 }
 
+.mp-photo-container {
+    position: relative;
+    width: 150px;
+    height: 200px;
+}
+
 .mp-photo {
     width: 150px;
     height: 200px;
     object-fit: cover;
     border-radius: 10px;
     box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2);
+}
+
+.mp-photo-placeholder {
+    width: 150px;
+    height: 200px;
+    background: linear-gradient(135deg, #f8f9fa, #e9ecef);
+    border: 2px dashed #dee2e6;
+    border-radius: 10px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    color: #6c757d;
+    font-size: 2rem;
+}
+
+.mp-photo-placeholder small {
+    font-size: 0.8rem;
+    margin-top: 0.5rem;
 }
 
 .mp-details h3 {
