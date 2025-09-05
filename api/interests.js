@@ -15,26 +15,85 @@ function toISO(d) {
   return /^\d{4}-\d{2}-\d{2}$/.test(d) ? `${d}T00:00:00Z` : d;
 }
 
+// replace your existing mapRow with this:
 function mapRow(r) {
+  // Find a source/payer string across common ParlParse/TWFY variants
+  const payerStr =
+    r.payer ??
+    r.donor ??
+    r.source ??
+    r.payer_name ??
+    r.organisation ??
+    r.organization ??            // US spelling just in case
+    r.company ??
+    r.employer ??
+    r.value_from ??
+    r.from ??
+    r.provider ??
+    r.sponsor ??
+    null;
+
+  // Prefer any numeric-looking money field; keep a human label too
+  const rawLabel =
+    r.amount ??
+    r.value ??
+    r.received_value ??
+    r.donation_value ??
+    r.payment_value ??
+    r.gross_value ??
+    r.net_value ??
+    null;
+
+  // Numeric parse that tolerates "£" and commas
+  const parseNum = (v) => {
+    if (v == null || v === '') return null;
+    const num = Number(String(v).replace(/[£,\s]/g, ''));
+    return Number.isFinite(num) ? num : null;
+  };
+
+  const amountNum =
+    parseNum(r.amount) ??
+    parseNum(r.value) ??
+    parseNum(r.received_value) ??
+    parseNum(r.donation_value) ??
+    parseNum(r.payment_value) ??
+    parseNum(r.gross_value) ??
+    parseNum(r.net_value) ??
+    null;
+
+  // Dates: prefer an explicit "received" date, fall back sensibly
+  const toISO = (d) => (d && /^\d{4}-\d{2}-\d{2}$/.test(d) ? `${d}T00:00:00Z` : (d || null));
+  const received =
+    r.received_date ?? r.date_received ?? r.date_of_payment ?? r.payment_date ?? r.entry_date ?? r.date ?? null;
+  const registered =
+    r.registered_date ?? r.date_registered ?? r.parsed_date ?? null;
+
   return {
     id:
       r.register_entry_id ??
-      `${r.person_id || r.member_id || r.mp_id || 'unknown'}-${r.entry_date || r.received_date || r.date || 'nodate'}-${r.payer || r.donor || 'nopayer'}`,
+      `${r.person_id || r.member_id || r.mp_id || 'x'}-${received || registered || 'x'}-${payerStr || 'x'}`,
+
     personId: r.person_id ?? r.member_id ?? r.mp_id ?? null,
     name: r.member_name ?? r.name ?? null,
     constituency: r.constituency ?? null,
+
     category: r.category ?? r.category_name ?? null,
     subcategory: r.subcategory ?? null,
-    payer: r.payer ?? r.donor ?? r.source ?? null,
-    amount: parseNumber(r.amount ?? r.value ?? r.received_value ?? r.donation_value),
-    amountLabel: r.amount ?? r.value ?? null,
-    receivedDate: toISO(r.received_date ?? r.date_received ?? r.entry_date ?? r.date),
-    registeredDate: toISO(r.registered_date ?? r.date_registered ?? r.parsed_date),
-    purpose: r.purpose ?? r.description ?? r.details ?? null,
-    link: r.link ?? r.source_url ?? r.register_url ?? null,
-    _raw: r,
+
+    payer: payerStr,                 // <-- string for UI
+    amount: amountNum,               // <-- numeric for charts
+    amountLabel: rawLabel,           // <-- keep raw human label if you show it
+
+    receivedDate: toISO(received),
+    registeredDate: toISO(registered),
+
+    purpose: r.purpose ?? r.description ?? r.details ?? r.nature ?? null,
+    link: r.link ?? r.source_url ?? r.register_url ?? r.url ?? null,
+
+    _raw: r,                         // keep raw row for debug
   };
 }
+
 
 function buildSQL({ start, end, payer, category, minAmount, maxAmount, personId, memberId }) {
   const where = [];
