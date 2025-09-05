@@ -6,7 +6,7 @@ import {
   parseAllGBP,
   inLastDays,
   monthKey,
-  extractSourcePlus, // ok if you don't have this—it's unused below
+
 } from "./util.js";
 
 // Set to true if you want a tiny debug line about extraction decisions (not required now)
