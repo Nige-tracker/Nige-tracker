@@ -1,5 +1,5 @@
-// /modules/interests.js
-function formatGBP(n) {
+// modules/interests.js
+function gbp(n) {
   if (n == null) return null;
   try {
     return new Intl.NumberFormat('en-GB', { style: 'currency', currency: 'GBP', maximumFractionDigits: 2 }).format(n);
@@ -8,49 +8,32 @@ function formatGBP(n) {
   }
 }
 
-function normaliseItem(item) {
-  // Ensure we never hand the UI an object where a string is expected
-  const source =
-    item.payer ??
-    item.name ??
-    item._raw?.payer_name ??
-    item._raw?.organisation ??
-    item._raw?.company ??
-    item._raw?.value_from ??
-    item._raw?.from ??
-    'Source not specified';
-
-  // Prefer numeric amount; fall back to parsing any label we kept
-  const parseNum = (v) => {
-    if (v == null || v === '') return null;
-    const num = Number(String(v).replace(/[£,\s]/g, ''));
-    return Number.isFinite(num) ? num : null;
-  };
-
-  const amountNumber =
-    item.amount ??
-    parseNum(item.amountLabel) ??
-    parseNum(item._raw?.received_value) ??
-    parseNum(item._raw?.value) ??
-    null;
+function stabilise(item) {
+  const payer = typeof item.payer === 'string' ? item.payer : (item.payer != null ? String(item.payer) : 'Source not specified');
+  const amountPretty = item.amount != null ? gbp(item.amount) : null;
 
   return {
     ...item,
-    payer: typeof source === 'string' ? source : String(source),
-    amount: amountNumber,                      // number for charts/logic
-    amountPretty: formatGBP(amountNumber),     // for display
+    payer,
+    amountPretty,
+    receivedPretty: item.receivedDate ? new Date(item.receivedDate).toLocaleDateString('en-GB') : null,
+    registeredPretty: item.registeredDate ? new Date(item.registeredDate).toLocaleDateString('en-GB') : null,
   };
 }
 
-export async function fetchInterests(params = {}) {
+export async function fetchInterests({ personId, start, end, payer, category, limit = 100, offset = 0 } = {}) {
   const qs = new URLSearchParams();
-  for (const [k, v] of Object.entries(params)) {
-    if (v !== undefined && v !== null && v !== '') qs.set(k, String(v));
-  }
-  const res = await fetch(`/api/interests?${qs.toString()}`);
-  if (!res.ok) throw new Error(`Interests API error ${res.status}`);
-  const data = await res.json();
+  if (personId) qs.set('personId', String(personId));
+  if (start) qs.set('start', start);
+  if (end) qs.set('end', end);
+  if (payer) qs.set('payer', payer);
+  if (category) qs.set('category', category);
+  qs.set('limit', String(limit));
+  qs.set('offset', String(offset));
 
-  const results = Array.isArray(data.results) ? data.results.map(normaliseItem) : [];
-  return { results, page: data.page ?? { limit: 0, offset: 0, nextOffset: null } };
+  const res = await fetch(`/api/interests?${qs.toString()}`);
+  if (!res.ok) throw new Error(`Interests API ${res.status}`);
+  const data = await res.json();
+  const results = Array.isArray(data.results) ? data.results.map(stabilise) : [];
+  return { results, page: data.page ?? { limit, offset, nextOffset: null } };
 }
