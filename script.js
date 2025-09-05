@@ -143,10 +143,16 @@ class NigelTracker {
         
         container.innerHTML = `
             <div class="mp-card">
-                <img src="https://www.theyworkforyou.com/images/mps/${mp.person_id || '11575'}.jpg" 
-                     alt="${mp.full_name}" 
-                     class="mp-photo"
-                     onerror="this.src='https://via.placeholder.com/150x200?text=No+Photo'">
+                <div class="mp-photo-container">
+                    <img src="https://www.theyworkforyou.com/images/mps/${mp.person_id || '11575'}.jpg" 
+                         alt="${mp.full_name}" 
+                         class="mp-photo"
+                         onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">
+                    <div class="mp-photo-placeholder" style="display: none;">
+                        <span>📸</span>
+                        <small>No Photo</small>
+                    </div>
+                </div>
                 <div class="mp-details">
                     <h3>${mp.full_name}</h3>
                     <p><strong>Constituency:</strong> ${mp.constituency}</p>
