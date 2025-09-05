@@ -11,11 +11,9 @@ function parseNumber(n) {
 
 function toISO(d) {
   if (!d) return null;
-  // Datasette often returns YYYY-MM-DD; ensure full ISO for consistent client parsing/sorting
   return /^\d{4}-\d{2}-\d{2}$/.test(d) ? `${d}T00:00:00Z` : d;
 }
 
-// Map a raw Datasette row -> unified shape your UI expects
 function mapRow(r) {
   return {
     id:
@@ -28,12 +26,12 @@ function mapRow(r) {
     subcategory: r.subcategory ?? null,
     payer: r.payer ?? r.donor ?? r.source ?? null,
     amount: parseNumber(r.amount ?? r.value ?? r.received_value ?? r.donation_value),
-    amountLabel: r.amount ?? r.value ?? null, // keep raw label if you show the original
+    amountLabel: r.amount ?? r.value ?? null,
     receivedDate: toISO(r.received_date ?? r.date_received ?? r.entry_date ?? r.date),
     registeredDate: toISO(r.registered_date ?? r.date_registered ?? r.parsed_date),
     purpose: r.purpose ?? r.description ?? r.details ?? null,
     link: r.link ?? r.source_url ?? r.register_url ?? null,
-    _raw: r, // keep raw for debugging
+    _raw: r,
   };
 }
 
@@ -50,7 +48,7 @@ function buildSQL({ start, end, payer, category, minAmount, maxAmount, personId,
 
   const whereSQL = where.length ? `WHERE ${where.join(' AND ')}` : '';
 
-  // IMPORTANT: Change `register_interests` below if your Datasette uses a different table/view name.
+  // TODO: If your Datasette uses a different table/view, change `register_interests` below.
   return `
     SELECT
       register_entry_id,
@@ -92,8 +90,11 @@ function buildSQL({ start, end, payer, category, minAmount, maxAmount, personId,
 
 // ---------- handler ----------
 export default async function handler(req) {
+  const url = new URL(req.url);
+  const diag = url.searchParams.get('diag') === '1';
+
   try {
-    const { searchParams } = new URL(req.url);
+    const { searchParams } = url;
 
     // New param names
     const start = searchParams.get('start');
@@ -116,9 +117,24 @@ export default async function handler(req) {
     const limit = Math.min(parseInt(limitRaw, 10) || 100, 500);
     const offset = parseInt(offsetRaw, 10) || 0;
 
-    // Build SQL + params for Datasette
-    const sql = buildSQL({ start, end, payer, category, minAmount, maxAmount, personId, memberId });
+    // Datasette endpoint
+    const BASE_URL = process.env.DATASETTE_BASE_URL;
+    const DB = process.env.DATASETTE_DB || 'parlparse';
 
+    // Early diagnostics
+    if (!BASE_URL) {
+      return new Response(
+        JSON.stringify({
+          error: 'Missing DATASETTE_BASE_URL env var',
+          hint: 'Set this in Vercel → Project → Settings → Environment Variables',
+          diag: { haveBaseUrl: !!BASE_URL, db: DB },
+        }),
+        { status: 500, headers: { 'content-type': 'application/json' } }
+      );
+    }
+
+    // Build SQL + params
+    const sql = buildSQL({ start, end, payer, category, minAmount, maxAmount, personId, memberId });
     const params = {
       start,
       end,
@@ -132,13 +148,6 @@ export default async function handler(req) {
       offset,
     };
 
-    // Datasette endpoint
-    const BASE_URL = process.env.DATASETTE_BASE_URL; // e.g. 'https://parlparse.yourhost.com'
-    const DB = process.env.DATASETTE_DB || 'parlparse'; // e.g. 'parlparse'
-    if (!BASE_URL) {
-      return new Response(JSON.stringify({ error: 'Missing DATASETTE_BASE_URL env var' }), { status: 500 });
-    }
-
     const dsURL = new URL(`${BASE_URL}/${DB}.json`);
     dsURL.searchParams.set('sql', sql);
     Object.entries(params).forEach(([k, v]) => {
@@ -149,20 +158,26 @@ export default async function handler(req) {
     const headers = {};
     if (process.env.DATASETTE_TOKEN) headers.Authorization = `Bearer ${process.env.DATASETTE_TOKEN}`;
 
-    const res = await fetch(dsURL.toString(), {
-      headers,
-      next: { revalidate: 60 }, // cache hint on Vercel Edge
-    });
+    // Optional: show constructed URL in diagnostics (WITHOUT secrets)
+    const constructedUrl = dsURL.toString();
 
-    if (!res.ok) {
-      const detail = await res.text();
-      return new Response(JSON.stringify({ error: 'Datasette error', status: res.status, detail }), { status: 502 });
+    const upstream = await fetch(constructedUrl, { headers, next: { revalidate: 60 } });
+
+    if (!upstream.ok) {
+      const bodyText = await upstream.text();
+      const snippet = bodyText.slice(0, 500);
+      const payload = {
+        error: 'Datasette error',
+        status: upstream.status,
+        detailSnippet: snippet,
+        ...(diag ? { constructedUrl } : {}),
+      };
+      return new Response(JSON.stringify(payload), { status: 502, headers: { 'content-type': 'application/json' } });
     }
 
-    const data = await res.json();
+    const data = await upstream.json();
     const rows = Array.isArray(data) ? data : data.rows || data;
 
-    // Dedupe by register_entry_id when available; otherwise use a composite key
     const seen = new Set();
     const mapped = [];
     for (const r of rows) {
@@ -175,21 +190,35 @@ export default async function handler(req) {
 
     const hasMore = rows.length === limit;
 
-    return new Response(
-      JSON.stringify({
-        results: mapped,
-        page: { limit, offset, nextOffset: hasMore ? offset + limit : null },
-        filters: { start, end, payer, category, minAmount: minAmount ?? null, maxAmount: maxAmount ?? null, personId: personId ?? null, memberId: memberId ?? null },
-      }),
-      {
-        status: 200,
-        headers: {
-          'content-type': 'application/json; charset=utf-8',
-          'cache-control': 'public, s-maxage=60, stale-while-revalidate=300',
-        },
-      }
-    );
+    const out = {
+      results: mapped,
+      page: { limit, offset, nextOffset: hasMore ? offset + limit : null },
+      filters: {
+        start, end, payer, category,
+        minAmount: minAmount ?? null, maxAmount: maxAmount ?? null,
+        personId: personId ?? null, memberId: memberId ?? null
+      },
+    };
+
+    if (diag) {
+      out.diag = {
+        haveBaseUrl: !!BASE_URL,
+        db: DB,
+        constructedUrl,
+        upstreamCount: Array.isArray(rows) ? rows.length : (rows?.length ?? null),
+      };
+    }
+
+    return new Response(JSON.stringify(out), {
+      status: 200,
+      headers: {
+        'content-type': 'application/json; charset=utf-8',
+        'cache-control': 'public, s-maxage=60, stale-while-revalidate=300',
+      },
+    });
   } catch (err) {
-    return new Response(JSON.stringify({ error: err.message || String(err) }), { status: 500 });
+    const payload = { error: err.message || String(err) };
+    if (diag) payload.stack = (err && err.stack) || null;
+    return new Response(JSON.stringify(payload), { status: 500, headers: { 'content-type': 'application/json' } });
   }
 }
