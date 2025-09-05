@@ -1,6 +1,7 @@
 // /api/interests.js
 export const config = { runtime: 'edge' };
 
+// ---------- helpers ----------
 function parseNumber(n) {
   if (n === null || n === undefined || n === '') return null;
   const cleaned = String(n).replace(/[£,]/g, '').trim();
@@ -10,12 +11,16 @@ function parseNumber(n) {
 
 function toISO(d) {
   if (!d) return null;
+  // Datasette often returns YYYY-MM-DD; ensure full ISO for consistent client parsing/sorting
   return /^\d{4}-\d{2}-\d{2}$/.test(d) ? `${d}T00:00:00Z` : d;
 }
 
+// Map a raw Datasette row -> unified shape your UI expects
 function mapRow(r) {
   return {
-    id: r.register_entry_id ?? `${r.person_id || r.member_id}-${r.entry_date || r.received_date || r.date || ''}-${r.payer || ''}`,
+    id:
+      r.register_entry_id ??
+      `${r.person_id || r.member_id || r.mp_id || 'unknown'}-${r.entry_date || r.received_date || r.date || 'nodate'}-${r.payer || r.donor || 'nopayer'}`,
     personId: r.person_id ?? r.member_id ?? r.mp_id ?? null,
     name: r.member_name ?? r.name ?? null,
     constituency: r.constituency ?? null,
@@ -23,12 +28,12 @@ function mapRow(r) {
     subcategory: r.subcategory ?? null,
     payer: r.payer ?? r.donor ?? r.source ?? null,
     amount: parseNumber(r.amount ?? r.value ?? r.received_value ?? r.donation_value),
-    amountLabel: r.amount ?? r.value ?? null,
+    amountLabel: r.amount ?? r.value ?? null, // keep raw label if you show the original
     receivedDate: toISO(r.received_date ?? r.date_received ?? r.entry_date ?? r.date),
     registeredDate: toISO(r.registered_date ?? r.date_registered ?? r.parsed_date),
     purpose: r.purpose ?? r.description ?? r.details ?? null,
     link: r.link ?? r.source_url ?? r.register_url ?? null,
-    _raw: r,
+    _raw: r, // keep raw for debugging
   };
 }
 
@@ -39,12 +44,13 @@ function buildSQL({ start, end, payer, category, minAmount, maxAmount, personId,
   if (payer) where.push('(payer LIKE :payer OR donor LIKE :payer)');
   if (category) where.push('(category = :category OR category_name = :category)');
   if (personId) where.push('(person_id = :personId)');
-  if (memberId) where.push('(member_id = :memberId OR mp_id = :memberId)'); // tolerate different column names
+  if (memberId) where.push('(member_id = :memberId OR mp_id = :memberId)');
   if (minAmount) where.push('CAST(REPLACE(REPLACE(IFNULL(amount, value), ",", ""), "£", "") AS REAL) >= :minAmount');
   if (maxAmount) where.push('CAST(REPLACE(REPLACE(IFNULL(amount, value), ",", ""), "£", "") AS REAL) <= :maxAmount');
 
   const whereSQL = where.length ? `WHERE ${where.join(' AND ')}` : '';
 
+  // IMPORTANT: Change `register_interests` below if your Datasette uses a different table/view name.
   return `
     SELECT
       register_entry_id,
@@ -84,99 +90,19 @@ function buildSQL({ start, end, payer, category, minAmount, maxAmount, personId,
   `;
 }
 
+// ---------- handler ----------
 export default async function handler(req) {
   try {
     const { searchParams } = new URL(req.url);
 
-    // New + legacy param names (so old UI keeps working)
-const start = searchParams.get('start');
-const end = searchParams.get('end');
-const payer = searchParams.get('payer');
-const category = searchParams.get('category');
-const minAmount = searchParams.get('minAmount');
-const maxAmount = searchParams.get('maxAmount');
+    // New param names
+    const start = searchParams.get('start');
+    const end = searchParams.get('end');
+    const payer = searchParams.get('payer');
+    const category = searchParams.get('category');
+    const minAmount = searchParams.get('minAmount');
+    const maxAmount = searchParams.get('maxAmount');
 
-// Legacy person/member filters used by your old UI
-const personId = searchParams.get('PersonId') || searchParams.get('personId');
-const memberId = searchParams.get('MemberId') || searchParams.get('memberId') || searchParams.get('mpId');
-
-// Pagination: accept legacy Take/Skip too
-const limitRaw = searchParams.get('limit') ?? searchParams.get('Take') ?? '100';
-const offsetRaw = searchParams.get('offset') ?? searchParams.get('Skip') ?? '0';
-const limit = Math.min(parseInt(limitRaw, 10) || 100, 500);
-const offset = parseInt(offsetRaw, 10) || 0;
-
-
-    const sql = buildSQL({ start, end, payer, category, minAmount, maxAmount });
-
-    const params = {
-  start,
-  end,
-  payer: payer ? `%${payer}%` : undefined,
-  category,
-  minAmount: minAmount ? Number(minAmount) : undefined,
-  maxAmount: maxAmount ? Number(maxAmount) : undefined,
-  personId,
-  memberId,
-  limit,
-  offset,
-};
-
-
-    const BASE_URL = process.env.DATASETTE_BASE_URL;
-    const DB = process.env.DATASETTE_DB || 'parlparse';
-    if (!BASE_URL) {
-      return new Response(JSON.stringify({ error: 'Missing DATASETTE_BASE_URL env var' }), { status: 500 });
-    }
-
-    const dsURL = new URL(`${BASE_URL}/${DB}.json`);
-    dsURL.searchParams.set('sql', sql);
-    Object.entries(params).forEach(([k, v]) => {
-      if (v !== undefined && v !== null && v !== '') dsURL.searchParams.set(`_params.${k}`, String(v));
-    });
-    dsURL.searchParams.set('_shape', 'objects');
-
-    const headers = {};
-    if (process.env.DATASETTE_TOKEN) headers.Authorization = `Bearer ${process.env.DATASETTE_TOKEN}`;
-
-    const res = await fetch(dsURL.toString(), {
-      headers,
-      next: { revalidate: 60 },
-    });
-    if (!res.ok) {
-      const text = await res.text();
-      return new Response(JSON.stringify({ error: 'Datasette error', status: res.status, detail: text }), { status: 502 });
-    }
-
-    const body = await res.json();
-    const rows = Array.isArray(body) ? body : body.rows || body;
-
-    const seen = new Set();
-    const mapped = [];
-    for (const r of rows) {
-      const m = mapRow(r);
-      const key = m.id || JSON.stringify([m.personId, m.payer, m.receivedDate, m.amount]);
-      if (seen.has(key)) continue;
-      seen.add(key);
-      mapped.push(m);
-    }
-
-    const hasMore = rows.length === limit;
-    return new Response(
-      JSON.stringify({
-        results: mapped,
-        page: { limit, offset, nextOffset: hasMore ? offset + limit : null },
-        filters: { start, end, payer, category, minAmount: minAmount ?? null, maxAmount: maxAmount ?? null },
-      }),
-      {
-        status: 200,
-        headers: {
-          'content-type': 'application/json; charset=utf-8',
-          'cache-control': 'public, s-maxage=60, stale-while-revalidate=300',
-        },
-      }
-    );
-  } catch (err) {
-    return new Response(JSON.stringify({ error: err.message || String(err) }), { status: 500 });
-  }
-}
+    // Person/member filters (support new and legacy)
+    const personId = searchParams.get('personId') || searchParams.get('PersonId');
+    const mem
