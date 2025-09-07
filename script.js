@@ -141,11 +141,25 @@ class NigelTracker {
         const container = document.getElementById('mp-details');
         const mp = this.mpData;
         
+        console.log('Rendering MP info with data:', mp);
+        
+        // Handle different possible data structures
+        let fullName = mp.full_name || mp.name || mp.display_name || 'Unknown';
+        let constituency = mp.constituency || mp.current_constituency || 'Unknown';
+        let party = mp.party || mp.current_party || 'Unknown';
+        let enteredHouse = mp.entered_house || mp.entered_on || 'Unknown';
+        let personId = mp.person_id || mp.id || 'Unknown';
+        
+        // Debug output
+        console.log('Processed values:', {
+            fullName, constituency, party, enteredHouse, personId
+        });
+        
         container.innerHTML = `
             <div class="mp-card">
                 <div class="mp-photo-container">
-                    <img src="https://www.theyworkforyou.com/images/mps/${mp.person_id || '11575'}.jpg" 
-                         alt="${mp.full_name}" 
+                    <img src="https://www.theyworkforyou.com/images/mps/${personId}.jpg" 
+                         alt="${fullName}" 
                          class="mp-photo"
                          onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">
                     <div class="mp-photo-placeholder" style="display: none;">
@@ -154,15 +168,19 @@ class NigelTracker {
                     </div>
                 </div>
                 <div class="mp-details">
-                    <h3>${mp.full_name}</h3>
-                    <p><strong>Constituency:</strong> ${mp.constituency}</p>
-                    <p><strong>Party:</strong> ${mp.party}</p>
-                    <p><strong>Entered House:</strong> ${new Date(mp.entered_house).toLocaleDateString('en-GB', {
+                    <h3>${fullName}</h3>
+                    <p><strong>Constituency:</strong> ${constituency}</p>
+                    <p><strong>Party:</strong> ${party}</p>
+                    <p><strong>Entered House:</strong> ${enteredHouse !== 'Unknown' ? new Date(enteredHouse).toLocaleDateString('en-GB', {
                         day: 'numeric',
                         month: 'long', 
                         year: 'numeric'
-                    })}</p>
-                    <p><strong>Person ID:</strong> ${mp.person_id}</p>
+                    }) : 'Unknown'}</p>
+                    <p><strong>Person ID:</strong> ${personId}</p>
+                    <details style="margin-top: 1rem;">
+                        <summary style="cursor: pointer; color: #666;">Debug: Raw API Data</summary>
+                        <pre style="background: #f5f5f5; padding: 1rem; margin-top: 0.5rem; font-size: 0.8rem; overflow-x: auto;">${JSON.stringify(mp, null, 2)}</pre>
+                    </details>
                 </div>
             </div>
         `;
