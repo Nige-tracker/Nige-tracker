@@ -1,6 +1,6 @@
 // Configuration
 const TWFY_API_BASE = 'https://www.theyworkforyou.com/api';
-const NIGEL_FARAGE_ID = '11575'; // Nigel Farage's person ID in TWFY
+const NIGEL_FARAGE_ID = '26352'; // Nigel Farage's person ID in TWFY
 
 // Get API key from environment variable (Vercel will inject this)
 const API_KEY = window.location.hostname === 'localhost' 
