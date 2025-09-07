@@ -33,6 +33,35 @@ class NigelTracker {
         }
     }
 
+    // API helper method
+    async callAPI(endpoint, params = {}) {
+        const url = new URL('/api/twfy', window.location.origin);
+        url.searchParams.set('endpoint', endpoint);
+        
+        // Add other parameters
+        Object.entries(params).forEach(([key, value]) => {
+            if (value !== undefined && value !== null) {
+                url.searchParams.set(key, value);
+            }
+        });
+
+        console.log('Calling API:', url.toString());
+
+        const response = await fetch(url.toString());
+        
+        console.log('API response status:', response.status);
+        
+        if (!response.ok) {
+            const errorText = await response.text();
+            console.error('API error response:', errorText);
+            throw new Error(`HTTP ${response.status}: ${errorText}`);
+        }
+        
+        const data = await response.json();
+        console.log('API response data:', data);
+        return data;
+    }
+
     async loadAllData() {
         console.log('Loading MP data...');
         await this.loadMPData();
