@@ -1,17 +1,34 @@
 // Configuration
-const TWFY_API_BASE = 'https://www.theyworkforyou.com/api';
-const NIGEL_FARAGE_ID = '26352'; // Nigel Farage's person ID in TWFY
+const API_BASE = '/api/twfy'; // Our secure backend API
+const NIGEL_FARAGE_ID = '26352'; // Nigel Farage's correct person ID in TWFY
 
-// Get API key from environment variable (Vercel will inject this)
-const API_KEY = window.location.hostname === 'localhost' 
-    ? 'demo' // Use demo key for local testing
-    : getEnvironmentVariable('VITE_TWFY_API_KEY');
+// Helper function to call our secure API
+async function callTWFYAPI(endpoint, params = {}) {
+    const url = new URL('/api/twfy', window.location.origin);
+    url.searchParams.set('endpoint', endpoint);
+    
+    // Add other parameters
+    Object.entries(params).forEach(([key, value]) => {
+        if (value !== undefined && value !== null) {
+            url.searchParams.set(key, value);
+        }
+    });
 
-// Helper function to get environment variables (for production)
-function getEnvironmentVariable(name) {
-    // In production, you'll need to inject this via your build process
-    // For now, we'll use a demo key
-    return 'demo';
+    console.log('Calling API:', url.toString());
+
+    const response = await fetch(url.toString());
+    
+    console.log('API response status:', response.status);
+    
+    if (!response.ok) {
+        const errorText = await response.text();
+        console.error('API error response:', errorText);
+        throw new Error(`HTTP ${response.status}: ${errorText}`);
+    }
+    
+    const data = await response.json();
+    console.log('API response data:', data);
+    return data;
 }
 
 // Main application
@@ -77,9 +94,14 @@ class NigelTracker {
 
     async loadMPData() {
         try {
-            const response = await fetch(`${TWFY_API_BASE}/getMP?key=${API_KEY}&id=${NIGEL_FARAGE_ID}&output=json`);
-            if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
-            this.mpData = await response.json();
+            console.log('Loading MP data for ID:', NIGEL_FARAGE_ID);
+            this.mpData = await this.callAPI('getMP', { id: NIGEL_FARAGE_ID });
+            console.log('MP data received:', this.mpData);
+            
+            // Check if we got valid data
+            if (!this.mpData || !this.mpData.full_name) {
+                throw new Error('Invalid MP data received');
+            }
         } catch (error) {
             console.error('Error loading MP data:', error);
             // Fallback data for demo purposes
@@ -90,6 +112,7 @@ class NigelTracker {
                 entered_house: "2024-07-04",
                 person_id: "26352"
             };
+            console.log('Using fallback MP data:', this.mpData);
         }
     }
 
@@ -132,11 +155,13 @@ class NigelTracker {
 
     async loadDebatesData() {
         try {
-            const data = await callTWFYAPI('getDebates', { 
+            console.log('Loading debates data...');
+            const data = await this.callAPI('getDebates', { 
                 person: NIGEL_FARAGE_ID, 
                 num: 10 
             });
             this.debatesData = data.rows || [];
+            console.log('Debates data received:', this.debatesData);
         } catch (error) {
             console.error('Error loading debates data:', error);
             // Fallback data for demo purposes
@@ -177,7 +202,7 @@ class NigelTracker {
         let constituency = mp.constituency || mp.current_constituency || 'Unknown';
         let party = mp.party || mp.current_party || 'Unknown';
         let enteredHouse = mp.entered_house || mp.entered_on || 'Unknown';
-        let personId = mp.person_id || mp.id || 'Unknown';
+        let personId = mp.person_id || mp.id || '26352';
         
         // Debug output
         console.log('Processed values:', {
