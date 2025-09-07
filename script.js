@@ -88,7 +88,7 @@ class NigelTracker {
                 constituency: "Clacton",
                 party: "Reform UK",
                 entered_house: "2024-07-04",
-                person_id: "11575"
+                person_id: "26352"
             };
         }
     }
